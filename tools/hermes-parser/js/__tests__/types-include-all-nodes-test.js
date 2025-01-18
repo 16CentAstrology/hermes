@@ -52,7 +52,7 @@ function getInterfaces(): $ReadOnlyMap<
           return;
         }
 
-        const properties = new Map();
+        const properties = new Map<string, PropertyEntry>();
 
         // add the properties directly declared on the node
         for (const property of node.body.properties) {
@@ -100,7 +100,7 @@ function getInterfaces(): $ReadOnlyMap<
 }
 
 const typesThatShouldBeSkipped = new Set([
-  // These types have a special union type declared to allow consumers to refine on `.computed`
+  // These types have a special union type declared to allow consumers to refine on specific properties
   'BinaryExpression',
   'DeclareExportDeclaration',
   'ExportNamedDeclaration',
@@ -109,6 +109,7 @@ const typesThatShouldBeSkipped = new Set([
   'ObjectTypeProperty',
   'Property',
   'PropertyDefinition',
+  'TypeOperator',
 ]);
 const propertiesThatShouldBeSkipped = new Map([
   [

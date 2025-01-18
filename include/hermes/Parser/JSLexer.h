@@ -211,6 +211,22 @@ class Token {
     return rawString_;
   }
 
+  /// For certain identifier-like syntactic forms, like Flow's
+  /// `renders? number`, we need to check that the `?` comes immediately after
+  /// `renders` with no whitespace. It is expensive to turn something like this
+  /// into a token, where identifiers have highly-optimized lexing performance.
+  /// Instead, we use this function to detect the `?`, and then we consume the
+  /// token using the normal advance or eat methods.
+  ///
+  /// \return true iff the character directly after the current token matches
+  /// the provided character.
+  bool checkFollowingCharacter(char c) const {
+    // The next character could be end of file \0 or could be the start of utf-8
+    // sequence, but it is always present.
+    assert((unsigned)c < 128 && "test character must be ASCII");
+    return *getEndLoc().getPointer() == c;
+  }
+
  private:
   void setStart(const char *start) {
     range_.Start = SMLoc::getFromPointer(start);
@@ -224,6 +240,11 @@ class Token {
   }
 
   void setPunctuator(TokenKind kind) {
+    kind_ = kind;
+  }
+  /// Set the TokenKind to a given IDENT_OP token.
+  /// Used when converting identifiers to the corresponding ident op token.
+  void setIdentOp(TokenKind kind) {
     kind_ = kind;
   }
   void setEof() {
@@ -420,6 +441,11 @@ class JSLexer {
     return resWordIdent_[ord(kind) - ord(TokenKind::_first_resword)];
   }
 
+  /// Source URL from magic comment.
+  llvh::StringRef sourceURL_{};
+  /// Source mapping URL from magic comment.
+  llvh::StringRef sourceMappingURL_{};
+
   /// Storage for comments we store when storedComments_ == true.
   /// Elements of commentStorage_ are pointers into the file buffer
   /// and have the same lifetime as pointers such as bufferStart_ and
@@ -540,6 +566,15 @@ class JSLexer {
     return prevTokenEndLoc_;
   }
 
+  /// Check whether the current 'let' is a declaration.
+  /// \pre the current token is the 'let' identifier.
+  /// Does not advance the current token,
+  /// but will skip some ASCII non-newline whitespaces.
+  /// Calling advance() after this function is intended.
+  /// \return true when the current 'let' must be a declaration,
+  ///   based on the next token ('[', '{', or identifier).
+  bool isLetFollowedByDeclStart();
+
   /// Force an EOF at the next token.
   void forceEOF() {
     curCharPtr_ = bufferEnd_;
@@ -579,8 +614,7 @@ class JSLexer {
   /// Should be called in the middle of parsing a template literal.
   const Token *rescanRBraceInTemplateLiteral();
 
-  /// Skip over any non-line-terminator whitespace and return the kind of
-  /// the next token if there was no LineTerminator before it.
+  /// Skip over any whitespace and return the kind of the next token.
   /// Does not report any error messages during lookahead.
   /// For example, this is used to determine whether we're in the
   ///   async [no LineTerminator here] function
@@ -590,10 +624,12 @@ class JSLexer {
   ///         ^
   /// case for parsing async functions and arrow functions.
   /// \pre current token is an identifier or reserved word.
+  /// \param RequireNoNewLine if true, then return llvh::None when there is a
+  ///   newline before the token seen by lookahead.
   /// \param expectedToken if not None, then if the next token is expectedToken,
   ///   the next token is scanned and the curCharPtr_ isn't reset.
-  /// \return the kind of next token if there was no LineTerminator,
-  ///   otherwise return None.
+  /// \return the kind of next token if available, otherwise return None.
+  template <bool RequireNoNewLine = true>
   OptValue<TokenKind> lookahead1(OptValue<TokenKind> expectedToken);
 
   UniqueString *getIdentifier(llvh::StringRef name) {
@@ -627,6 +663,18 @@ class JSLexer {
   /// \return a pointer to the end of the buffer.
   const char *getBufferEnd() const {
     return bufferEnd_;
+  }
+
+  /// \return the source URL from the magic comment, or an empty string if there
+  /// was no magic comment.
+  llvh::StringRef getSourceURL() const {
+    return sourceURL_;
+  }
+
+  /// \return the source mapping URL from the magic comment, or an empty string
+  /// if there was no magic comment.
+  llvh::StringRef getSourceMappingURL() const {
+    return sourceMappingURL_;
   }
 
   /// \return any stored comments to this point, moving them out of storage
@@ -690,14 +738,17 @@ class JSLexer {
           commentStorageSize_(lexer->getStoredComments().size()),
           tokenStorageSize_(lexer_->getStoredTokens().size()) {
       assert(
-          (isPunctuatorDbg(kind_) || kind_ == TokenKind::identifier) &&
-          "SavePoint can only be used for punctuators");
+          (isPunctuatorDbg(kind_) || kind_ == TokenKind::identifier ||
+           kind_ == TokenKind::rw_extends) &&
+          "SavePoint can only be used for punctuators, identifier or `extends` keyword");
     }
 
     /// Restore the state of the lexer to the originally saved state.
     void restore() {
       if (kind_ == TokenKind::identifier) {
         lexer_->unsafeSetIdentifier(ident_, loc_, range_);
+      } else if (kind_ == TokenKind::rw_extends) {
+        lexer_->unsafeSetReservedWord(kind_, loc_, range_);
       } else {
         lexer_->unsafeSetPunctuator(kind_, loc_, range_);
       }
@@ -718,6 +769,16 @@ class JSLexer {
       }
     }
   };
+
+  /// Convert the current token to an identifier-operator token.
+  /// Identifiers for new TokenKinds can be added here.
+  /// \pre the current token is an identifier which is an IDENT_OP operator.
+  /// \param the IDENT_OP token kind to convert to.
+  void convertCurTokenToIdentOp(TokenKind kind) {
+    assert(token_.getKind() == TokenKind::identifier);
+    assert(token_.getIdentifier()->str() == tokenKindStr(kind));
+    token_.setIdentOp(kind);
+  }
 
  private:
   /// Initialize the storage with the characters between \p begin and \p end.
@@ -940,6 +1001,15 @@ class JSLexer {
   /// Should only be used for save point use-cases.
   void unsafeSetIdentifier(UniqueString *ident, SMLoc loc, SMRange range) {
     token_.setIdentifier(ident);
+    token_.setRange(range);
+    seek(loc);
+  }
+
+  /// Set the current token kind to \p kind without any checks and seek to
+  /// \p loc.
+  /// Should only be used for save point use-cases.
+  void unsafeSetReservedWord(TokenKind kind, SMLoc loc, SMRange range) {
+    token_.setResWord(kind, resWordIdent(kind));
     token_.setRange(range);
     seek(loc);
   }

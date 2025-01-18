@@ -124,6 +124,11 @@ class Interpreter {
       Handle<> value,
       bool strictMode);
 
+  /// Processes OpCodes. This function can be recursively called. For example,
+  /// while processing a Debugger OpCode, we might call stepFunction to single
+  /// step an instruction. Another example might be whenever we process
+  /// AsyncBreak, the DebuggerAPI observer might return an EVAL DebugCommand or
+  /// call into evaluateJavaScript and trigger a nested interpretFunction call.
   /// Inlining this function is forbidden because it stores label values in a
   /// local static variable. Due to a bug in LLVM, it may sometimes be inlined
   /// anyway, so explicitly mark it as noinline.
@@ -154,6 +159,23 @@ class Interpreter {
       unsigned numElements,
       unsigned numLiterals,
       unsigned bufferIndex);
+
+  /// Implements global variable declaration as per ES2023 16.1.7.10.a.i.
+  /// \return ExecutionStatus::EXCEPTION if the global object cannot be
+  /// expanded.
+  static ExecutionStatus declareGlobalVarImpl(
+      Runtime &runtime,
+      CodeBlock *curCodeBlock,
+      const Inst *ip);
+
+  /// Implements the restricted global property check as per
+  /// ES2023 16.1.7.3.[cd].
+  /// \return ExecutionStatus::EXCEPTION if the global object already has a
+  /// restricted property with the name provided in \p ip.
+  static ExecutionStatus throwIfHasRestrictedGlobalPropertyImpl(
+      Runtime &runtime,
+      CodeBlock *curCodeBlock,
+      const Inst *ip);
 
 #ifdef HERMES_ENABLE_DEBUGGER
   /// Wrapper around runDebugger() that reapplies the interpreter state.

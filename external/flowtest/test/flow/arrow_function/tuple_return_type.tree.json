@@ -31,7 +31,7 @@
             "type":"TupleTypeAnnotation",
             "loc":{"source":null,"start":{"line":1,"column":4},"end":{"line":1,"column":20}},
             "range":[4,20],
-            "types":[
+            "elementTypes":[
               {
                 "type":"FunctionTypeAnnotation",
                 "loc":{"source":null,"start":{"line":1,"column":5},"end":{"line":1,"column":19}},
@@ -56,9 +56,11 @@
                   "range":[15,19]
                 },
                 "rest":null,
-                "typeParameters":null
+                "typeParameters":null,
+                "this":null
               }
-            ]
+            ],
+            "inexact":false
           }
         },
         "typeParameters":null

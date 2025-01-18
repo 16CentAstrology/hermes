@@ -91,7 +91,7 @@ class HadesGC final : public GCBase {
   void getHeapInfoWithMallocSize(HeapInfo &info) override;
   void getCrashManagerHeapInfo(CrashManager::HeapInformation &info) override;
 #ifdef HERMES_MEMORY_INSTRUMENTATION
-  void createSnapshot(llvh::raw_ostream &os) override;
+  void createSnapshot(llvh::raw_ostream &os, bool captureNumericValue) override;
   void snapshotAddGCNativeNodes(HeapSnapshot &snap) override;
   void snapshotAddGCNativeEdges(HeapSnapshot &snap) override;
   void enableHeapProfiler(
@@ -269,6 +269,10 @@ class HadesGC final : public GCBase {
   void snapshotWriteBarrierRangeSlow(
       const GCSmallHermesValue *start,
       uint32_t numHVs);
+
+  /// Add read barrier for \p value. This is only used when reading entry
+  /// value from WeakMap/WeakSet.
+  void weakRefReadBarrier(HermesValue value);
 
   void weakRefReadBarrier(GCCell *value);
 
@@ -693,8 +697,12 @@ class HadesGC final : public GCBase {
   /// the gcMutex_ to the mutator as soon as possible.
   AtomicIfConcurrentGC<bool> ogPaused_{false};
 
-  /// Condition variable that the background thread should wait on when
-  /// ogPaused_ is set to true, until the mutator has acquired gcMutex_.
+  /// Condition variable used to block either the mutator or background thread
+  /// until the other has completed.
+  ///   1. The background thread should wait on this when ogPaused_ is set to
+  ///   true, until the mutator has acquired gcMutex_.
+  ///   2. The mutator should wait on this if it is waiting for the background
+  ///   thread to finish its current task.
   std::condition_variable_any ogPauseCondVar_;
 
   enum class Phase : uint8_t {
@@ -724,17 +732,9 @@ class HadesGC final : public GCBase {
   /// concurrently with the mutator.
   std::unique_ptr<Executor> backgroundExecutor_;
 
-  /// This tracks the current status of execution in the background thread. The
-  /// future should be set every time work is enqueued onto the executor. After
-  /// that, whenever we need to wait for execution in the background thread to
-  /// end, we can call get() on this future.
-  std::future<void> ogThreadStatus_;
-
-#ifndef NDEBUG
   /// True from the time the background task is created, to the time it exits
-  /// the collection loop. False otherwise.
+  /// the collection loop. False otherwise. Protected by gcMutex_.
   bool backgroundTaskActive_{false};
-#endif
 
   /// If true, whenever YG fills up immediately put it into the OG.
   bool promoteYGToOG_;
@@ -837,15 +837,6 @@ class HadesGC final : public GCBase {
     std::shared_ptr<HeapSegment> segment;
   } compactee_;
 
-  /// If compaction completes before sweeping, there is a possibility that
-  /// dangling pointers into the now freed compactee may remain in the OG heap
-  /// until sweeping finishes. In certain cases, like when scanning dirty cards,
-  /// this could cause a segfault if you attempt to say, compress a pointer. To
-  /// handle this case, if compaction completes while sweeping is still in
-  /// progress, this shared_ptr will keep the compactee segment alive until the
-  /// end of sweeping.
-  std::shared_ptr<HeapSegment> compacteeHandleForSweep_;
-
   /// The number of compactions this GC has performed.
   size_t numCompactions_{0};
 
@@ -946,6 +937,13 @@ class HadesGC final : public GCBase {
   /// whether this call was made from the background thread.
   void incrementalCollect(bool backgroundThread);
 
+  /// Iterate the list of `weakMapEntrySlots_`, for each non-free slot, if
+  /// both the key and the owner are marked, mark the mapped value.
+  /// Note that this may further cause other values to be marked, so we need to
+  /// keep iterating until no update. After the iteration, set each unreachable
+  /// mapped value to Empty.
+  void markWeakMapEntrySlots();
+
   /// Finish the marking process. This requires a STW pause in order to do a
   /// final marking worklist drain, and to update weak roots. It must be invoked
   /// from the mutator.
@@ -1001,15 +999,6 @@ class HadesGC final : public GCBase {
 
   /// Finalize all objects in YG that have finalizers.
   void finalizeYoungGenObjects();
-
-  /// Update all of the weak references, invalidate the ones that point to
-  /// dead objects, and free the ones that were not marked at all.
-  void updateWeakReferencesForOldGen();
-
-  /// The WeakMap type in JS has special semantics for handling keys kept alive
-  /// by only their values. In between marking and sweeping, this function is
-  /// called to handle that special case.
-  void completeWeakMapMarking(MarkAcceptor &acceptor);
 
   /// Return the total number of bytes that are in use by the JS heap.
   uint64_t allocatedBytes() const;
@@ -1114,11 +1103,6 @@ void *HadesGC::allocWork(uint32_t sz) {
       isSizeHeapAligned(sz) &&
       "Should be aligned before entering this function");
   assert(sz >= minAllocationSize() && "Allocating too small of an object");
-  if (kConcurrentGC) {
-    HERMES_SLOW_ASSERT(
-        !weakRefMutex() &&
-        "WeakRef mutex should not be held when alloc is called");
-  }
   if (shouldSanitizeHandles()) {
     // The best way to sanitize uses of raw pointers outside handles is to force
     // the entire heap to move, and ASAN poison the old heap. That is too

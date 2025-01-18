@@ -13,7 +13,6 @@ There's no way for us to automatically reference the transform function types ge
 */
 import {
   GetHermesESTreeJSON,
-  NODES_WITHOUT_TRANSFORM_NODE_TYPES,
   formatAndWriteDistArtifact,
 } from './utils/scriptUtils';
 
@@ -22,10 +21,6 @@ const cloneSignatures: Array<string> = [];
 
 const signatureNames: Array<string> = [];
 for (const node of GetHermesESTreeJSON()) {
-  if (NODES_WITHOUT_TRANSFORM_NODE_TYPES.has(node.name)) {
-    continue;
-  }
-
   imports.push(node.name);
   const signatureName = `${node.name}CloneSignature`;
   signatureNames.push(signatureName);
@@ -36,11 +31,11 @@ for (const node of GetHermesESTreeJSON()) {
 type ${signatureName} =
   ((
     node: ${node.name},
-    newProps: $Partial<${propTypes}>,
+    newProps: Partial<${propTypes}>,
   ) => DetachedNode<${node.name}>) &
   ((
     node: ?${node.name},
-    newProps: $Partial<${propTypes}>,
+    newProps: Partial<${propTypes}>,
   ) => DetachedNode<${node.name}> | null);
 `,
   );

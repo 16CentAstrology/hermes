@@ -7,6 +7,7 @@
 
 #include "TestHelpers.h"
 
+#include "hermes/VM/JSLib/DateCache.h"
 #include "hermes/VM/JSLib/DateUtil.h"
 
 #include <cstdlib>
@@ -121,6 +122,16 @@ TEST(DateUtilTest, WeekDayTest) {
   EXPECT_EQ(3, weekDay(23415386789000)); // Wed, Jan 3, 2712
 }
 
+namespace {
+/// `localtime_r()` called in localTZA() caches the timezone. To correctly
+/// handle different timezones in a single test, let's call `tzset()` explicitly
+/// to update the cached timezone.
+void setTimeZone(const char *tzname) {
+  hermes::oscompat::set_env("TZ", tzname);
+  ::tzset();
+}
+} // namespace
+
 TEST(DateUtilTest, LocalTZATest) {
   // On Windows, TZ env can only be set to a very limited format,
   // as documented in Microsoft Docs for _tzset. Specifically,
@@ -135,9 +146,9 @@ TEST(DateUtilTest, LocalTZATest) {
 
   // US Pacific: DST is from Mar to Nov
 #ifdef _WINDOWS
-  hermes::oscompat::set_env("TZ", "PST8PDT");
+  setTimeZone("PST8PDT");
 #else
-  hermes::oscompat::set_env("TZ", "America/Los_Angeles");
+  setTimeZone("America/Los_Angeles");
 #endif
   EXPECT_EQ(-2.88e+7, localTZA());
 
@@ -145,7 +156,7 @@ TEST(DateUtilTest, LocalTZATest) {
 #ifdef _WINDOWS
   // This test is skipped due to Windows deficiency in TZ env variable.
 #else
-  hermes::oscompat::set_env("TZ", "Pacific/Auckland");
+  setTimeZone("Pacific/Auckland");
   EXPECT_EQ(4.32e+7, localTZA());
 #endif
 
@@ -154,17 +165,17 @@ TEST(DateUtilTest, LocalTZATest) {
 
   // Negative fixed zone
 #ifdef _WINDOWS
-  hermes::oscompat::set_env("TZ", "PST8");
+  setTimeZone("PST8");
 #else
-  hermes::oscompat::set_env("TZ", "Etc/GMT+8");
+  setTimeZone("Etc/GMT+8");
 #endif
   EXPECT_EQ(-2.88e+7, localTZA());
 
   // Positive fixed zone
 #ifdef _WINDOWS
-  hermes::oscompat::set_env("TZ", "JST-9");
+  setTimeZone("JST-9");
 #else
-  hermes::oscompat::set_env("TZ", "Asia/Tokyo");
+  setTimeZone("Asia/Tokyo");
 #endif
   EXPECT_EQ(3.24e+7, localTZA());
 
@@ -202,13 +213,21 @@ TEST(DateUtilTest, EquivalentTimeTest) {
 }
 
 TEST(DateUtilTest, DaylightSavingTATest) {
-  hermes::oscompat::set_env("TZ", "America/Los_Angeles");
+  LocalTimeOffsetCache localTimeOffsetCache;
+  /// A wrapper that implements the deleted daylightSavingTA() function.
+  auto daylightSavingTA = [&localTimeOffsetCache](double timeMs) {
+    return localTimeOffsetCache.daylightSavingOffsetInMs(timeMs);
+  };
+
+  setTimeZone("America/Los_Angeles");
+  localTimeOffsetCache.reset();
   EXPECT_EQ(MS_PER_HOUR, daylightSavingTA(1489530532000)); // Mar 14, 2017
   EXPECT_EQ(MS_PER_HOUR, daylightSavingTA(1019514530000)); // Apr 22, 2002
   EXPECT_EQ(0, daylightSavingTA(1487111330000)); // Feb 14, 2017
   EXPECT_EQ(0, daylightSavingTA(1017700130000)); // Apr 1, 2002
 
-  hermes::oscompat::set_env("TZ", "America/Chicago");
+  setTimeZone("America/Chicago");
+  localTimeOffsetCache.reset();
   EXPECT_EQ(MS_PER_HOUR, daylightSavingTA(1489530532000)); // Mar 14, 2017
   EXPECT_EQ(MS_PER_HOUR, daylightSavingTA(1019514530000)); // Apr 22, 2002
   EXPECT_EQ(0, daylightSavingTA(1487111330000)); // Feb 14, 2017
@@ -233,37 +252,43 @@ TEST(DateUtilTest, LocalTimeTest) {
   // 2018-07-02T04:00:00+1200[America/New_York] (DST not in effect)
   // 2018-07-02T01:00:00+0900[Asia/Tokyo] (DST not observed)
 
-#ifdef _WINDOWS
-  hermes::oscompat::set_env("TZ", "PST8PDT");
-#else
-  hermes::oscompat::set_env("TZ", "America/Los_Angeles");
-#endif
-  EXPECT_EQ(1530435600000, localTime(1530460800000));
-  EXPECT_EQ(1530460800000, utcTime(1530435600000));
+  LocalTimeOffsetCache localTimeOffsetCache;
 
 #ifdef _WINDOWS
-  hermes::oscompat::set_env("TZ", "EST5EDT");
+  setTimeZone("PST8PDT");
 #else
-  hermes::oscompat::set_env("TZ", "America/New_York");
+  setTimeZone("America/Los_Angeles");
 #endif
-  EXPECT_EQ(1530446400000, localTime(1530460800000));
-  EXPECT_EQ(1530460800000, utcTime(1530446400000));
+  localTimeOffsetCache.reset();
+  EXPECT_EQ(1530435600000, localTime(1530460800000, localTimeOffsetCache));
+  EXPECT_EQ(1530460800000, utcTime(1530435600000, localTimeOffsetCache));
+
+#ifdef _WINDOWS
+  setTimeZone("EST5EDT");
+#else
+  setTimeZone("America/New_York");
+#endif
+  localTimeOffsetCache.reset();
+  EXPECT_EQ(1530446400000, localTime(1530460800000, localTimeOffsetCache));
+  EXPECT_EQ(1530460800000, utcTime(1530446400000, localTimeOffsetCache));
 
 #ifdef _WINDOWS
   // This test is skipped due to Windows deficiency in TZ env variable.
 #else
-  hermes::oscompat::set_env("TZ", "Pacific/Auckland");
-  EXPECT_EQ(1530504000000, localTime(1530460800000));
-  EXPECT_EQ(1530460800000, utcTime(1530504000000));
+  setTimeZone("Pacific/Auckland");
+  localTimeOffsetCache.reset();
+  EXPECT_EQ(1530504000000, localTime(1530460800000, localTimeOffsetCache));
+  EXPECT_EQ(1530460800000, utcTime(1530504000000, localTimeOffsetCache));
 #endif
 
 #ifdef _WINDOWS
-  hermes::oscompat::set_env("TZ", "JST-9");
+  setTimeZone("JST-9");
 #else
-  hermes::oscompat::set_env("TZ", "Asia/Tokyo");
+  setTimeZone("Asia/Tokyo");
 #endif
-  EXPECT_EQ(1530493200000, localTime(1530460800000));
-  EXPECT_EQ(1530460800000, utcTime(1530493200000));
+  localTimeOffsetCache.reset();
+  EXPECT_EQ(1530493200000, localTime(1530460800000, localTimeOffsetCache));
+  EXPECT_EQ(1530460800000, utcTime(1530493200000, localTimeOffsetCache));
 
   hermes::oscompat::unset_env("TZ");
 }

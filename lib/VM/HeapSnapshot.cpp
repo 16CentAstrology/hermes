@@ -40,19 +40,23 @@ const char *kSectionLabels[] = {
 
 } // namespace
 
-HeapSnapshot::HeapSnapshot(JSONEmitter &json, StackTracesTree *stackTracesTree)
+HeapSnapshot::HeapSnapshot(
+    JSONEmitter &json,
+    NodeIndex nodeCount,
+    EdgeIndex edgeCount,
+    size_t traceFunctionCount,
+    StackTracesTree *stackTracesTree)
     : json_(json),
       stackTracesTree_(stackTracesTree),
       stringTable_(
           stackTracesTree ? stackTracesTree->getStringTable()
                           : std::make_shared<StringSetVector>()) {
   json_.openDict();
-  emitMeta();
+  emitMeta(nodeCount, edgeCount, traceFunctionCount);
 }
 
 HeapSnapshot::~HeapSnapshot() {
-  assert(
-      edgeCount_ == expectedEdges_ && "Fewer edges added than were expected");
+  assert(edgeCount_ == expectedEdges_ && "Unexpected edges count");
   emitStrings();
   json_.closeDict(); // top level
 }
@@ -91,13 +95,11 @@ void HeapSnapshot::endSection(Section section) {
 }
 
 void HeapSnapshot::beginNode() {
-  if (nextSection_ == Section::Edges) {
-    // If the edges are being emitted, ignore node output.
-    return;
-  }
-  assert(nextSection_ == Section::Nodes && sectionOpened_);
   // Reset the edge counter.
   currEdgeCount_ = 0;
+  assert(
+      nextSection_ == Section::Edges ||
+      (nextSection_ == Section::Nodes && sectionOpened_));
 }
 
 void HeapSnapshot::endNode(
@@ -134,15 +136,15 @@ void HeapSnapshot::addNamedEdge(
     EdgeType type,
     llvh::StringRef name,
     NodeID toNode) {
+  // If we're emitting nodes, only count the number of edges being processed,
+  // but don't actually emit them.
+  currEdgeCount_++;
   if (nextSection_ == Section::Nodes) {
-    // If we're emitting nodes, only count the number of edges being processed,
-    // but don't actually emit them.
-    currEdgeCount_++;
     return;
   }
-  assert(
-      edgeCount_++ < expectedEdges_ && "Added more edges than were expected");
+  assert(edgeCount_ < expectedEdges_ && "Added more edges than were expected");
   assert(nextSection_ == Section::Edges && sectionOpened_);
+  edgeCount_++;
 
   json_.emitValue(index(type));
   json_.emitValue(stringTable_->insert(name));
@@ -157,15 +159,15 @@ void HeapSnapshot::addIndexedEdge(
     EdgeType type,
     EdgeIndex edgeIndex,
     NodeID toNode) {
+  // If we're emitting nodes, only count the number of edges being processed,
+  // but don't actually emit them.
+  currEdgeCount_++;
   if (nextSection_ == Section::Nodes) {
-    // If we're emitting nodes, only count the number of edges being processed,
-    // but don't actually emit them.
-    currEdgeCount_++;
     return;
   }
-  assert(
-      edgeCount_++ < expectedEdges_ && "Added more edges than were expected");
+  assert(edgeCount_ < expectedEdges_ && "Added more edges than were expected");
   assert(nextSection_ == Section::Edges && sectionOpened_);
+  edgeCount_++;
 
   json_.emitValue(index(type));
   json_.emitValue(edgeIndex);
@@ -234,7 +236,10 @@ const char *HeapSnapshot::edgeTypeToName(EdgeType type) {
   return "";
 }
 
-void HeapSnapshot::emitMeta() {
+void HeapSnapshot::emitMeta(
+    HeapSnapshot::NodeIndex nodeCount,
+    HeapSnapshot::EdgeIndex edgeCount,
+    size_t traceFunctionCount) {
   json_.emitKey("snapshot");
   json_.openDict();
 
@@ -324,40 +329,14 @@ void HeapSnapshot::emitMeta() {
   json_.emitKey("node_count");
   // This can be zero because it's only used as an optimization hint to
   // the viewer.
-  json_.emitValue(0);
+  json_.emitValue(nodeCount);
   json_.emitKey("edge_count");
   // This can be zero because it's only used as an optimization hint to
   // the viewer.
-  json_.emitValue(0);
+  json_.emitValue(edgeCount);
   json_.emitKey("trace_function_count");
-  json_.emitValue(countFunctionTraceInfos());
+  json_.emitValue(traceFunctionCount);
   json_.closeDict(); // "snapshot"
-}
-
-size_t HeapSnapshot::countFunctionTraceInfos() {
-  if (!stackTracesTree_) {
-    return 0;
-  }
-
-  size_t count = 0;
-  llvh::DenseSet<
-      StackTracesTreeNode::SourceLoc,
-      StackTracesTreeNode::SourceLocMapInfo>
-      sourceLocSet;
-  llvh::SmallVector<StackTracesTreeNode *, 128> nodeStack;
-  nodeStack.push_back(stackTracesTree_->getRootNode());
-  while (!nodeStack.empty()) {
-    auto curNode = nodeStack.pop_back_val();
-    auto funcHashToFuncIdxMapEntry = sourceLocSet.find(curNode->sourceLoc);
-    if (funcHashToFuncIdxMapEntry == sourceLocSet.end()) {
-      count++;
-      sourceLocSet.insert(curNode->sourceLoc);
-    }
-    for (auto child : curNode->getChildren()) {
-      nodeStack.push_back(child);
-    }
-  }
-  return count;
 }
 
 void HeapSnapshot::emitAllocationTraceInfo() {
@@ -401,6 +380,10 @@ void HeapSnapshot::emitAllocationTraceInfo() {
     }
   }
   endSection(Section::TraceFunctionInfos);
+
+  // Save the trace function count (which is essentially the number of nodes
+  // on the tree with unique SourceLocs.
+  traceFunctionCount_ = sourceLocToFuncIdxMap.size();
 
   beginSection(Section::TraceTree);
   nodeStack.push(stackTracesTree_->getRootNode());

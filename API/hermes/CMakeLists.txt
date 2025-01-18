@@ -3,72 +3,117 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# compileJS uses neither exceptions nor RTTI
+add_hermes_library(compileJS CompileJS.cpp LINK_LIBS hermesPublic hermesHBCBackend)
+
+if(HERMES_ENABLE_DEBUGGER)
+  # Some inspector sources need to be built without RTTI because they consume
+  # internal data structures compiled without RTTI.
+  set(INSPECTOR_NO_EH_RTTI_SOURCES
+    cdp/JSONValueInterfaces.cpp
+    cdp/MessageConverters.cpp
+    cdp/MessageInterfaces.cpp
+    cdp/MessageTypes.cpp
+    inspector/chrome/JSONValueInterfaces.cpp
+    inspector/chrome/MessageConverters.cpp
+    inspector/chrome/MessageInterfaces.cpp
+    inspector/chrome/MessageTypes.cpp
+  )
+
+  if (NOT HERMES_ENABLE_EH_RTTI)
+    if (GCC_COMPATIBLE)
+      set_property(SOURCE ${INSPECTOR_NO_EH_RTTI_SOURCES} APPEND_STRING
+        PROPERTY COMPILE_FLAGS "-fno-exceptions -fno-rtti")
+    elseif (MSVC)
+      set_property(SOURCE ${INSPECTOR_NO_EH_RTTI_SOURCES} APPEND_STRING
+        PROPERTY COMPILE_FLAGS "/EHs-c- /GR-")
+    endif ()
+  endif ()
+
+  set(CDP_API_SOURCES
+    cdp/CDPAgent.cpp
+    cdp/CallbackOStream.cpp
+    cdp/ConsoleMessage.cpp
+    cdp/DebuggerDomainAgent.cpp
+    cdp/HeapProfilerDomainAgent.cpp
+    cdp/ProfilerDomainAgent.cpp
+    cdp/RemoteObjectConverters.cpp
+    cdp/RemoteObjectsTable.cpp
+    cdp/RuntimeDomainAgent.cpp
+    cdp/ConsoleMessage.cpp
+    cdp/CDPDebugAPI.cpp
+    cdp/DomainState.cpp
+  )
+
+  set(INSPECTOR_API_SOURCES
+    inspector/chrome/CallbackOStream.cpp
+    inspector/chrome/CDPHandler.cpp
+    inspector/chrome/RemoteObjectConverters.cpp
+    inspector/chrome/RemoteObjectsTable.cpp
+    inspector/RuntimeAdapter.cpp
+    ${CDP_API_SOURCES}
+    ${INSPECTOR_NO_EH_RTTI_SOURCES}
+  )
+
+  # Even in lean builds, the inspector needs the parser to parse JSON.
+  set(INSPECTOR_DEPS hermesParser)
+endif()
+
+add_hermes_library(synthTraceParser SynthTraceParser.cpp LINK_LIBS hermesSupport hermesParser synthTrace)
+
+# All remaining targets in this file use both exceptions and RTTI.
+set(HERMES_ENABLE_EH_RTTI ON)
+
+add_subdirectory(cdp)
+
+# List the files that define exported functions explicitly, and they can link
+# against the internal functionality they need.
 set(api_sources
   hermes.cpp
   DebuggerAPI.cpp
+  AsyncDebuggerAPI.cpp
+  RuntimeTaskRunner.cpp
+  ${INSPECTOR_API_SOURCES}
   )
 
 file(GLOB api_headers ${CMAKE_CURRENT_SOURCE_DIR}/*.h)
 file(GLOB api_public_headers ${PROJECT_SOURCE_DIR}/public/hermes/Public/*.h)
 
-add_hermes_library(hermesapi
-        ${api_sources}
-        LINK_LIBS jsi hermesVMRuntime)
-target_include_directories(hermesapi PUBLIC ..)
-
-add_hermes_library(hermesapiLean
-        ${api_sources}
-        LINK_LIBS jsi hermesVMRuntimeLean)
-target_include_directories(hermesapiLean PUBLIC ..)
+if(HERMES_THREAD_SAFETY_ANALYSIS)
+  set(TSA_SOURCES
+    AsyncDebuggerAPI.cpp
+    ${CDP_API_SOURCES}
+  )
+  if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
+    set_property(SOURCE ${TSA_SOURCES} APPEND_STRING PROPERTY
+      COMPILE_FLAGS "-Wthread-safety -Werror=thread-safety-analysis -Werror=thread-safety-precise -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS")
+  endif()
+endif()
 
 add_hermes_library(synthTrace hermes_tracing.cpp SynthTrace.cpp TracingRuntime.cpp
-  LINK_LIBS hermesapi)
+  LINK_LIBS libhermes hermesPlatform)
 
 add_hermes_library(timerStats TimerStats.cpp LINK_LIBS jsi hermesSupport)
 
 add_hermes_library(traceInterpreter TraceInterpreter.cpp
-  LINK_LIBS hermesapi hermesInstrumentation synthTrace synthTraceParser)
+  LINK_LIBS libhermes hermesInstrumentation synthTrace synthTraceParser)
 
-set(HERMES_LINK_COMPONENTS LLVHSupport)
-set(HERMES_ENABLE_RTTI OFF)
-
-# synthTraceParser uses exceptions but not rtti
-add_hermes_library(synthTraceParser SynthTraceParser.cpp LINK_LIBS hermesSupport hermesParser synthTrace)
-
-set(HERMES_ENABLE_EH OFF)
-
-# compileJS uses neither exceptions nor RTTI
-add_hermes_library(compileJS STATIC CompileJS.cpp LINK_LIBS hermesPublic)
-
-# Restore EH and RTTI (Note: At the time of writing, there is no usage of
-# add_hermes_library either after this line in this file or in a sub directory.
-# However, the values are restored anyways for the sake of sanity.)
-set(HERMES_ENABLE_EH ON)
-set(HERMES_ENABLE_RTTI ON)
-
-add_library(libhermes SHARED ${api_sources})
-
-# This is configured using a cmake flag instead of a separate target, because
-# we need the output to be named "libhermes.so".
-set(LIBHERMES_VM_DEP hermesVMRuntime)
-if(HERMES_BUILD_LEAN_LIBHERMES)
-  set(LIBHERMES_VM_DEP hermesVMRuntimeLean)
-endif()
-
-target_link_libraries(libhermes
-  PRIVATE
-  jsi
-  ${LIBHERMES_VM_DEP}
-)
+add_library(libhermes ${api_sources})
+target_link_libraries(libhermes PUBLIC jsi PRIVATE hermesVMRuntime ${INSPECTOR_DEPS})
 target_link_options(libhermes PRIVATE ${HERMES_EXTRA_LINKER_FLAGS})
 
 # Export the required header directory
 target_include_directories(libhermes PUBLIC .. ../../public ${HERMES_JSI_DIR})
 
-set_target_properties(libhermes PROPERTIES
-  # Avoid becoming liblibhermes (and there's already a target called 'hermes')
-  OUTPUT_NAME hermes
-)
+# Avoid becoming liblibhermes (and there's already a target called 'hermes')
+set_target_properties(libhermes PROPERTIES OUTPUT_NAME hermes)
+
+# Create a lean version of libhermes in the same way.
+add_library(libhermes_lean ${api_sources})
+target_link_libraries(libhermes_lean PUBLIC jsi PRIVATE hermesVMRuntimeLean ${INSPECTOR_DEPS})
+target_link_options(libhermes_lean PRIVATE ${HERMES_EXTRA_LINKER_FLAGS})
+target_include_directories(libhermes_lean PUBLIC .. ../../public ${HERMES_JSI_DIR})
+set_target_properties(libhermes_lean PROPERTIES OUTPUT_NAME hermes_lean)
 
 if(APPLE AND HERMES_BUILD_APPLE_FRAMEWORK)
   set_target_properties(libhermes PROPERTIES
@@ -96,6 +141,10 @@ if(APPLE AND HERMES_BUILD_APPLE_FRAMEWORK)
     add_custom_command(TARGET libhermes POST_BUILD
       COMMAND /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${CMAKE_OSX_DEPLOYMENT_TARGET}" $<TARGET_FILE_DIR:libhermes>/Info.plist
     )
+  elseif(HERMES_APPLE_TARGET_PLATFORM MATCHES "appletv")
+    add_custom_command(TARGET libhermes POST_BUILD
+      COMMAND /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${CMAKE_OSX_DEPLOYMENT_TARGET}" $<TARGET_FILE_DIR:libhermes>/Info.plist
+    )
   elseif(HERMES_APPLE_TARGET_PLATFORM MATCHES "catalyst")
     add_custom_command(TARGET libhermes POST_BUILD
       COMMAND /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string ${CMAKE_OSX_DEPLOYMENT_TARGET}" $<TARGET_FILE_DIR:libhermes>/Resources/Info.plist
@@ -103,6 +152,14 @@ if(APPLE AND HERMES_BUILD_APPLE_FRAMEWORK)
   elseif(HERMES_APPLE_TARGET_PLATFORM MATCHES "macos")
     add_custom_command(TARGET libhermes POST_BUILD
       COMMAND /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string ${CMAKE_OSX_DEPLOYMENT_TARGET}" $<TARGET_FILE_DIR:libhermes>/Resources/Info.plist
+    )
+  elseif(HERMES_APPLE_TARGET_PLATFORM MATCHES "xr")
+    if(CMAKE_VERSION VERSION_LESS 3.28.4)
+      message("VisionOS Simulator requires CMake version >= 3.28.4")
+    endif()
+
+    add_custom_command(TARGET libhermes POST_BUILD
+      COMMAND /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string ${CMAKE_OSX_DEPLOYMENT_TARGET}" $<TARGET_FILE_DIR:libhermes>/Info.plist
     )
   endif()
 endif()

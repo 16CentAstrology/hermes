@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  *
  * @flow strict
- * @format
+ * @noformat
  */
 
 'use strict';
@@ -43,7 +43,8 @@ type PatternVisitorTypeAnnotationCallback = (
   pattern: BindingName,
 ) => void;
 
-function isPattern(node: ESNode): boolean %checks {
+
+function isPattern(node: ESNode): boolean {
   return (
     node.type === 'Identifier' ||
     node.type === 'ObjectPattern' ||

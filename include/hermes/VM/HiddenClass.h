@@ -55,6 +55,12 @@ struct ClassFlags {
   /// searched for - they don't exist.
   uint8_t hasIndexLikeProperties : 1;
 
+  /// There may be a accessor property somewhere in the entire chain of leading
+  /// up to this HiddenClass. Set when a property is an accessor, and can never
+  /// be unset. That means this is a pessimistic flag: if a getter/setter
+  /// property is set and then deleted, this will still be set to true.
+  uint8_t mayHaveAccessor : 1;
+
   ClassFlags() {
     ::memset(this, 0, sizeof(*this));
   }
@@ -143,6 +149,8 @@ class TransitionMap {
   ~TransitionMap() {
     if (isLarge())
       delete large();
+    else if (!isClean())
+      smallValue().releaseSlot();
   }
 
   /// Return true if there is an entry with the given key and a valid value.
@@ -175,8 +183,6 @@ class TransitionMap {
     if (smallKey_ == key && smallValue().isValid()) {
       return false;
     }
-    // Need to hold the lock when mutating smallKey and smallValue.
-    WeakRefLock lk{runtime.getHeap().weakRefMutex()};
     if (isClean()) {
       smallKey_ = key;
       smallValue() = WeakRef<HiddenClass>(runtime, value);
@@ -184,16 +190,7 @@ class TransitionMap {
     }
     if (!isLarge())
       uncleanMakeLarge(runtime);
-    return large()->insertNewLocked(runtime, key, value);
-  }
-
-  /// Accepts every valid WeakRef in the map.
-  void markWeakRefs(WeakRefAcceptor &acceptor) {
-    if (isLarge()) {
-      large()->markWeakRefs(acceptor);
-    } else if (!isClean()) {
-      acceptor.accept(smallValue());
-    }
+    return large()->insertNew(runtime, key, value);
   }
 
   /// \return estimated dynamically allocated memory owned by this map.
@@ -312,6 +309,10 @@ class HiddenClass final : public GCCell {
 
   bool getHasIndexLikeProperties() const {
     return flags_.hasIndexLikeProperties;
+  }
+
+  bool getMayHaveAccessor() const {
+    return flags_.mayHaveAccessor;
   }
 
   /// \return The for-in cache if one has been set, otherwise nullptr.
@@ -542,9 +543,6 @@ class HiddenClass final : public GCCell {
   /// Free all non-GC managed resources associated with the object.
   static void _finalizeImpl(GCCell *cell, GC &gc);
 
-  /// Mark all the weak references for an object.
-  static void _markWeakImpl(GCCell *cell, WeakRefAcceptor &acceptor);
-
   /// \return the amount of non-GC memory being used by the given \p cell, which
   /// is assumed to be a HiddenClass.
   static size_t _mallocSizeImpl(GCCell *cell);
@@ -592,6 +590,15 @@ class HiddenClass final : public GCCell {
   /// Cache that contains for-in property names for objects of this class.
   /// Never used in dictionary mode.
   GCPointer<BigStorage> forInCache_{};
+
+  /// Computes the updated class flags for a class with flags \p flags for when
+  /// a property is added or updated with property flags \p pf and based on
+  /// whether a new index like property has been added.
+  /// This operation is idempotent, which means that multiple updates with the
+  /// same \p pf and \p addedIndexLike may be collapsed into a single update.
+  /// \return Updated flags that reflect the added/updated property.
+  static ClassFlags
+  computeFlags(ClassFlags flags, PropertyFlags pf, bool addedIndexLike);
 };
 
 //===----------------------------------------------------------------------===//
@@ -639,6 +646,16 @@ inline OptValue<bool> HiddenClass::tryFindPropertyFast(
     return false;
   }
   return llvh::None;
+}
+inline ClassFlags HiddenClass::computeFlags(
+    ClassFlags flags,
+    PropertyFlags pf,
+    bool addedIndexLike) {
+  flags.hasIndexLikeProperties |= addedIndexLike;
+  // Carry over the the existing mayHaveAccessor flag. Once an accessor property
+  // has been set, all subsequent classes must have this property marked.
+  flags.mayHaveAccessor |= pf.accessor;
+  return flags;
 }
 
 } // namespace vm

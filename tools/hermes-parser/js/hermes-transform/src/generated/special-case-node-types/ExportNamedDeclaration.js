@@ -35,6 +35,7 @@ export function ExportNamedDeclarationWithDeclaration(props: {
     props.parent,
     {
       type: 'ExportNamedDeclaration',
+      // $FlowFixMe[incompatible-call]
       declaration: asDetachedNode(props.declaration),
       specifiers: [],
       source: null,
@@ -66,6 +67,7 @@ export function ExportNamedDeclarationWithSpecifiers(props: {
       type: 'ExportNamedDeclaration',
       declaration: null,
       specifiers: props.specifiers.map(n => asDetachedNode(n)),
+      // $FlowFixMe[incompatible-call]
       source: asDetachedNode(props.source),
       exportKind: props.exportKind,
     },

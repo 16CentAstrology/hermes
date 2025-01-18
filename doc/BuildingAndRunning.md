@@ -13,7 +13,7 @@ The Hermes REPL will also use libreadline, if available.
 
 To install dependencies on Ubuntu:
 
-    apt install cmake git ninja-build libicu-dev python zip libreadline-dev
+    apt install cmake git ninja-build libicu-dev python3 zip libreadline-dev
 
 On Arch Linux:
 
@@ -71,7 +71,7 @@ The primary binary is the `hermes` tool, which will be found at `build/bin/herme
 
 To run the Hermes test suite:
 
-    ninja check-hermes
+    cmake --build ./build --target check-hermes
 
 To run Hermes against the test262 suite, you need to have a Hermes binary built
 already and a clone of the [test262 repo](https://github.com/tc39/test262/):

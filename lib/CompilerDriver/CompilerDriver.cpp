@@ -35,6 +35,7 @@
 #include "hermes/Support/MemoryBuffer.h"
 #include "hermes/Support/OSCompat.h"
 #include "hermes/Support/OptValue.h"
+#include "hermes/Support/Statistic.h"
 #include "hermes/Support/Warning.h"
 #include "hermes/Utils/Dumper.h"
 #include "hermes/Utils/Options.h"
@@ -72,6 +73,7 @@ using llvh::cl::list;
 using llvh::cl::opt;
 using llvh::cl::OptionCategory;
 using llvh::cl::Positional;
+using llvh::cl::ReallyHidden;
 using llvh::cl::value_desc;
 using llvh::cl::values;
 using llvh::cl::ValuesClass;
@@ -283,6 +285,25 @@ opt<bool> BasicBlockProfiling(
     init(false),
     desc("Enable basic block profiling (HBC only)"));
 
+opt<bool> EnableBlockScoping(
+    "block-scoping",
+    desc("Enables block scoping support."),
+    init(false),
+    Hidden,
+    cat(CompilerCategory));
+static llvh::cl::alias _EnableBlockScoping(
+    "bs",
+    desc("Alias for --block-scoping"),
+    Hidden,
+    llvh::cl::aliasopt(EnableBlockScoping));
+
+opt<bool> ES6Class(
+    "Xes6-class",
+    init(false),
+    desc("Enable support for ES6 Class"),
+    Hidden,
+    cat(CompilerCategory));
+
 opt<bool>
     EnableEval("enable-eval", init(true), desc("Enable support for eval()"));
 
@@ -391,7 +412,7 @@ static opt<bool> DumpUseList(
 
 static opt<LocationDumpMode> DumpSourceLocation(
     "dump-source-location",
-    desc("Print source location information in IR or AST dumps."),
+    desc("Print source location information in IR/AST/bytecode dumps."),
     init(LocationDumpMode::None),
     values(
         clEnumValN(
@@ -415,11 +436,44 @@ static opt<bool> IncludeRawASTProp(
     Hidden,
     cat(CompilerCategory));
 
-static opt<bool> DumpBetweenPasses(
-    "Xdump-between-passes",
+static opt<bool> DumpBeforeAll(
+    "Xdump-before-all",
     init(false),
     Hidden,
-    desc("Print IR after every optimization pass"),
+    desc("Dump the IR before every optimization pass"),
+    cat(CompilerCategory));
+
+static list<std::string> DumpBefore(
+    "Xdump-before",
+    Hidden,
+    desc("Dump the IR before each given pass"),
+    cat(CompilerCategory));
+
+static opt<bool> DumpAfterAll(
+    "Xdump-after-all",
+    init(false),
+    Hidden,
+    desc("Dump the IR after every optimization pass"),
+    cat(CompilerCategory));
+
+static list<std::string> DumpAfter(
+    "Xdump-after",
+    Hidden,
+    desc("Dump the IR after each given pass"),
+    cat(CompilerCategory));
+
+static list<std::string> FunctionsToDump(
+    "Xfunctions-to-dump",
+    Hidden,
+    desc("Only dump the IR for the given functions"),
+    cat(CompilerCategory));
+
+static opt<bool> GenerateNamesForAnonymousFunctions(
+    "Xgen-names-anon-functions",
+    init(false),
+    ReallyHidden,
+    desc("Instructs the compiler to create a synthetic label for anonymous "
+         "functions"),
     cat(CompilerCategory));
 
 #ifndef NDEBUG
@@ -455,6 +509,20 @@ static opt<bool> ParseFlow(
     desc("Parse Flow"),
     init(false),
     cat(CompilerCategory));
+
+static opt<bool> ParseFlowComponentSyntax(
+    "Xparse-component-syntax",
+    desc("Parse Component syntax"),
+    init(false),
+    Hidden,
+    cat(CompilerCategory));
+
+static opt<bool> ParseFlowMatch(
+    "Xparse-flow-match",
+    desc("Parse Flow match statements and expressions"),
+    init(false),
+    Hidden,
+    cat(CompilerCategory));
 #endif
 
 #if HERMES_PARSE_TS
@@ -482,6 +550,7 @@ static ValuesClass warningValues{
 #define WARNING_CATEGORY_HIDDEN(name, specifier, description) \
   clEnumValN(Warning::name, specifier, description),
 #include "hermes/Support/Warnings.def"
+
 };
 
 static list<hermes::Warning> Werror(
@@ -523,13 +592,6 @@ static CLFlag StripFunctionNames(
     false,
     "Strip function names to reduce string table size",
     CompilerCategory);
-
-static opt<bool> EnableTDZ(
-    "Xenable-tdz",
-    init(false),
-    Hidden,
-    desc("UNSUPPORTED: Enable TDZ checks for let/const"),
-    cat(CompilerCategory));
 
 #define WARNING_CATEGORY(name, specifier, description) \
   static CLFlag name##Warning(                         \
@@ -743,6 +805,7 @@ bool loadGlobalDefinition(
   auto parsedJs = jsParser.parse();
   if (!parsedJs)
     return false;
+  jsParser.registerMagicURLs();
 
   declFileList.push_back(parsedJs.getValue());
   return true;
@@ -797,10 +860,11 @@ ESTree::NodePtr parseJS(
   auto mode = parser::FullParse;
 
   if (context->isLazyCompilation() && isLargeFile) {
-    if (!parser::JSParser::preParseBuffer(
-            *context, fileBufId, useStaticBuiltinDetected)) {
+    auto preParser = parser::JSParser::preParseBuffer(*context, fileBufId);
+    if (!preParser)
       return nullptr;
-    }
+    useStaticBuiltinDetected = preParser->getUseStaticBuiltin();
+    preParser->registerMagicURLs();
     mode = parser::LazyParse;
   }
 
@@ -814,10 +878,11 @@ ESTree::NodePtr parseJS(
   {
     parser::JSParser jsParser(*context, fileBufId, mode);
     parsedJs = jsParser.parse();
-    // If we are using lazy parse mode, we should have already detected the 'use
-    // static builtin' directive in the pre-parsing stage.
-    if (mode != parser::LazyParse) {
+    // If we are using lazy parse mode, we should have already detected the
+    // 'use static builtin' directive and magic URLs in the pre-parsing stage.
+    if (parsedJs && mode != parser::LazyParse) {
       useStaticBuiltinDetected = jsParser.getUseStaticBuiltin();
+      jsParser.registerMagicURLs();
     }
   }
   if (!parsedJs)
@@ -934,6 +999,8 @@ bool validateFlags() {
   if (cl::LazyCompilation) {
     if (cl::BytecodeFormat != cl::BytecodeFormatKind::HBC)
       err("-lazy only works with -target=HBC");
+    if (cl::DumpTarget != Execute)
+      err("-lazy only works when executing");
     if (cl::OptimizationLevel > cl::OptLevel::Og)
       err("-lazy does not work with -O");
     if (cl::BytecodeMode) {
@@ -1028,24 +1095,46 @@ static void setWarningsAreErrorsFromFlags(SourceErrorManager &sm) {
   }
 }
 
+static llvh::SmallDenseSet<llvh::StringRef> stringListOptToDenseSet(
+    const llvh::cl::list<std::string> &list) {
+  llvh::SmallDenseSet<llvh::StringRef> ret;
+  for (llvh::StringRef s : list) {
+    ret.insert(s);
+  }
+  return ret;
+}
+
+void initializeDumpOptions(
+    CodeGenerationSettings::DumpSettings &dumpSettings,
+    const llvh::cl::opt<bool> &dumpAll,
+    const llvh::cl::list<std::string> &passes) {
+  dumpSettings.all = dumpAll;
+  dumpSettings.passes = stringListOptToDenseSet(passes);
+}
+
 /// Create a Context, respecting the command line flags.
 /// \return the Context.
 std::shared_ptr<Context> createContext(
     std::unique_ptr<Context::ResolutionTable> resolutionTable,
     std::vector<uint32_t> segments) {
   CodeGenerationSettings codeGenOpts;
-  codeGenOpts.enableTDZ = cl::EnableTDZ;
   codeGenOpts.dumpOperandRegisters = cl::DumpOperandRegisters;
   codeGenOpts.dumpSourceLevelScope = cl::DumpSourceLevelScope;
   codeGenOpts.dumpTextifiedCallee = cl::DumpTextifiedCallee;
   codeGenOpts.dumpUseList = cl::DumpUseList;
   codeGenOpts.dumpSourceLocation =
       cl::DumpSourceLocation != LocationDumpMode::None;
-  codeGenOpts.dumpIRBetweenPasses = cl::DumpBetweenPasses;
+  initializeDumpOptions(
+      codeGenOpts.dumpBefore, cl::DumpBeforeAll, cl::DumpBefore);
+  initializeDumpOptions(codeGenOpts.dumpAfter, cl::DumpAfterAll, cl::DumpAfter);
+  codeGenOpts.functionsToDump = stringListOptToDenseSet(cl::FunctionsToDump);
+  codeGenOpts.generateNameForUnnamedFunctions =
+      cl::GenerateNamesForAnonymousFunctions;
   if (cl::BytecodeFormat == cl::BytecodeFormatKind::HBC) {
     codeGenOpts.unlimitedRegisters = false;
   }
   codeGenOpts.instrumentIR = cl::InstrumentIR;
+  codeGenOpts.enableBlockScoping = cl::EnableBlockScoping;
 
   OptimizationSettings optimizationOpts;
 
@@ -1075,6 +1164,7 @@ std::shared_ptr<Context> createContext(
   // Default is non-strict mode.
   context->setStrictMode(!cl::NonStrictMode && cl::StrictMode);
   context->setEnableEval(cl::EnableEval);
+  context->setConvertES6Classes(cl::ES6Class);
   context->getSourceErrorManager().setOutputOptions(guessErrorOutputOptions());
 
   setWarningsAreErrorsFromFlags(context->getSourceErrorManager());
@@ -1098,7 +1188,7 @@ std::shared_ptr<Context> createContext(
         defaultFlags.preemptiveFunctionCompilationThreshold);
   }
 
-  if (cl::EagerCompilation || cl::DumpTarget == EmitBundle ||
+  if (cl::EagerCompilation || cl::DumpTarget != Execute ||
       cl::OptimizationLevel > cl::OptLevel::Og) {
     // Make sure nothing is lazy
     context->setLazyCompilation(false);
@@ -1112,8 +1202,8 @@ std::shared_ptr<Context> createContext(
     context->setLazyCompilation(true);
   }
 
-  if (cl::CommonJS) {
-    context->setUseCJSModules(true);
+  if (cl::CommonJS && cl::DumpTarget == DumpTransformedAST) {
+    context->setTransformCJSModules(true);
   }
 
 #if HERMES_PARSE_JSX
@@ -1126,6 +1216,8 @@ std::shared_ptr<Context> createContext(
   if (cl::ParseFlow) {
     context->setParseFlow(ParseFlowSetting::ALL);
   }
+  context->setParseFlowComponentSyntax(cl::ParseFlowComponentSyntax);
+  context->setParseFlowMatch(cl::ParseFlowMatch);
 #endif
 
 #if HERMES_PARSE_TS
@@ -1653,6 +1745,10 @@ CompileResult disassembleBytecode(std::unique_ptr<hbc::BCProvider> bytecode) {
   hbc::DisassemblyOptions disassemblyOptions = cl::Pretty
       ? hbc::DisassemblyOptions::Pretty
       : hbc::DisassemblyOptions::None;
+  if (cl::DumpSourceLocation != LocationDumpMode::None) {
+    disassemblyOptions =
+        disassemblyOptions | hbc::DisassemblyOptions::IncludeSource;
+  }
   hbc::BytecodeDisassembler disassembler(std::move(bytecode));
   disassembler.setOptions(disassemblyOptions);
   disassembler.disassemble(fileOS.os());
@@ -1761,8 +1857,11 @@ CompileResult generateBytecodeForSerialization(
     }
 
     if (cl::DumpTarget == DumpBytecode) {
-      disassembleBytecode(hbc::BCProviderFromSrc::createBCProviderFromSrc(
-          std::move(bytecodeModule)));
+      std::unique_ptr<hbc::BCProviderFromSrc> provider =
+          hbc::BCProviderFromSrc::createBCProviderFromSrc(
+              std::move(bytecodeModule));
+      provider->setSourceHash(sourceHash);
+      disassembleBytecode(std::move(provider));
     }
   } else {
     llvm_unreachable("Invalid bytecode kind");
@@ -1846,7 +1945,7 @@ CompileResult processSourceFiles(
   Module M(context);
   sem::SemContext semCtx{};
 
-  if (context->getUseCJSModules()) {
+  if (cl::CommonJS) {
     // Allow the IR generation function to populate inputSourceMaps to ensure
     // proper source map ordering.
     if (!generateIRForSourcesAsCJSModules(
@@ -2090,6 +2189,12 @@ void printHermesVersion(
     s << "  Features:\n"
 #ifdef HERMES_ENABLE_DEBUGGER
       << "    Debugger\n"
+#endif
+#ifdef HERMESVM_CONTIGUOUS_HEAP
+      << "    Contiguous Heap\n"
+#endif
+#ifdef HERMES_ENABLE_UNICODE_REGEXP_PROPERTY_ESCAPES
+      << "    Unicode RegExp Property Escapes\n"
 #endif
       << "    Zip file input\n";
   }

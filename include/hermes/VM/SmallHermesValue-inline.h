@@ -24,9 +24,13 @@
 namespace hermes {
 namespace vm {
 
+#ifndef HERMESVM_ALLOW_COMPRESSED_POINTERS
+
 void SmallHermesValueAdaptor::setInGC(SmallHermesValueAdaptor hv, GC &gc) {
   HermesValue::setInGC(hv, gc);
 }
+
+#else // #ifndef HERMESVM_ALLOW_COMPRESSED_POINTERS
 
 void HermesValue32::setInGC(HermesValue32 hv, GC &gc) {
   setNoBarrier(hv);
@@ -46,11 +50,11 @@ HermesValue HermesValue32::unboxToHV(PointerBase &pb) const {
       return HermesValue::encodeStringValue(getString(pb));
     case ETag::BoxedDouble1:
     case ETag::BoxedDouble2:
-      return HermesValue::encodeNumberValue(
+      return HermesValue::encodeUntrustedNumberValue(
           vmcast<BoxedDouble>(getPointer(pb))->get());
     case ETag::SmallInt1:
     case ETag::SmallInt2:
-      return HermesValue::encodeNumberValue(getSmallInt());
+      return HermesValue::encodeTrustedNumberValue(getSmallInt());
     case ETag::Symbol1:
     case ETag::Symbol2:
       return HermesValue::encodeSymbolValue(SymbolID::unsafeCreate(getValue()));
@@ -148,6 +152,9 @@ double HermesValue32::getNumber(PointerBase &pb) const {
       "Strings must use encodeStringValue; BigInts, encodeBigIntValue");
   return encodePointerImpl(ptr, Tag::Object, pb);
 }
+
+#endif // #ifndef HERMESVM_ALLOW_COMPRESSED_POINTERS
+
 } // namespace vm
 } // namespace hermes
 #pragma GCC diagnostic pop

@@ -253,13 +253,13 @@ inline const GCConfig TestGCConfigFixedSize(
 #define GET_GLOBAL(predefinedId) GET_VALUE(runtime.getGlobal(), predefinedId)
 
 inline HermesValue operator"" _hd(long double d) {
-  return HermesValue::encodeDoubleValue(d);
+  return HermesValue::encodeUntrustedNumberValue(d);
 }
 
 /// A minimal Runtime for GC tests.
-class DummyRuntime final : public HandleRootOwner,
-                           public PointerBase,
-                           private GCBase::GCCallbacks {
+class HERMES_EMPTY_BASES DummyRuntime final : public HandleRootOwner,
+                                              public PointerBase,
+                                              private GCBase::GCCallbacks {
  private:
   GCStorage gcStorage_;
 

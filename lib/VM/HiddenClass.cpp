@@ -47,6 +47,18 @@ void TransitionMap::snapshotAddNodes(GC &gc, HeapSnapshot &snap) {
 }
 
 void TransitionMap::snapshotAddEdges(GC &gc, HeapSnapshot &snap) {
+  uint32_t edge_index = 0;
+  forEachEntry([&snap, &gc, &edge_index](
+                   const Transition &, const WeakRef<HiddenClass> &value) {
+    // Filter out empty refs from adding edges.
+    if (value.isValid()) {
+      snap.addNamedEdge(
+          HeapSnapshot::EdgeType::Weak,
+          std::to_string(edge_index++),
+          gc.getObjectID(value.getNoBarrierUnsafe(gc.getPointerBase())));
+    }
+  });
+
   if (!isLarge()) {
     return;
   }
@@ -75,7 +87,8 @@ void TransitionMap::uncleanMakeLarge(Runtime &runtime) {
   auto large = new WeakValueMap<Transition, HiddenClass>();
   // Move any valid entry into the allocated map.
   if (auto value = smallValue().get(runtime))
-    large->insertNewLocked(runtime, smallKey_, runtime.makeHandle(value));
+    large->insertNew(runtime, smallKey_, runtime.makeHandle(value));
+  smallValue().releaseSlot();
   u.large_ = large;
   smallKey_.symbolID = SymbolID::deleted();
   assert(isLarge());
@@ -87,7 +100,6 @@ const VTable HiddenClass::vt{
     CellKind::HiddenClassKind,
     cellSize<HiddenClass>(),
     _finalizeImpl,
-    _markWeakImpl,
     _mallocSizeImpl,
     nullptr
 #ifdef HERMES_MEMORY_INSTRUMENTATION
@@ -108,11 +120,6 @@ void HiddenClassBuildMeta(const GCCell *cell, Metadata::Builder &mb) {
   mb.addField("parent", &self->parent_);
   mb.addField("propertyMap", &self->propertyMap_);
   mb.addField("forInCache", &self->forInCache_);
-}
-
-void HiddenClass::_markWeakImpl(GCCell *cell, WeakRefAcceptor &acceptor) {
-  auto *self = reinterpret_cast<HiddenClass *>(cell);
-  self->transitionMap_.markWeakRefs(acceptor);
 }
 
 void HiddenClass::_finalizeImpl(GCCell *cell, GC &gc) {
@@ -379,10 +386,11 @@ CallResult<std::pair<Handle<HiddenClass>, SlotIndex>> HiddenClass::addProperty(
   assert(propertyFlags.isValid() && "propertyFlags must be valid");
 
   if (LLVM_UNLIKELY(selfHandle->isDictionary())) {
-    if (toArrayIndex(
-            runtime.getIdentifierTable().getStringView(runtime, name))) {
-      selfHandle->flags_.hasIndexLikeProperties = true;
-    }
+    auto isIndexLike =
+        toArrayIndex(runtime.getIdentifierTable().getStringView(runtime, name))
+            .hasValue();
+    selfHandle->flags_ =
+        computeFlags(selfHandle->flags_, propertyFlags, isIndexLike);
 
     // Allocate a new slot.
     // TODO: this changes the property map, so if we want to support OOM
@@ -452,10 +460,11 @@ CallResult<std::pair<Handle<HiddenClass>, SlotIndex>> HiddenClass::addProperty(
     // Do it.
     auto childHandle = copyToNewDictionary(selfHandle, runtime);
 
-    if (toArrayIndex(
-            runtime.getIdentifierTable().getStringView(runtime, name))) {
-      childHandle->flags_.hasIndexLikeProperties = true;
-    }
+    auto isIndexLike =
+        toArrayIndex(runtime.getIdentifierTable().getStringView(runtime, name))
+            .hasValue();
+    childHandle->flags_ =
+        computeFlags(childHandle->flags_, propertyFlags, isIndexLike);
 
     // Add the property to the child.
     if (LLVM_UNLIKELY(
@@ -471,11 +480,16 @@ CallResult<std::pair<Handle<HiddenClass>, SlotIndex>> HiddenClass::addProperty(
     return std::make_pair(childHandle, childHandle->numProperties_++);
   }
 
+  auto isIndexLike =
+      toArrayIndex(runtime.getIdentifierTable().getStringView(runtime, name))
+          .hasValue();
+  auto newFlags = computeFlags(selfHandle->flags_, propertyFlags, isIndexLike);
+
   // Allocate the child.
   auto childHandle = runtime.makeHandle<HiddenClass>(
       runtime.ignoreAllocationFailure(HiddenClass::create(
           runtime,
-          selfHandle->flags_,
+          newFlags,
           selfHandle,
           name,
           propertyFlags,
@@ -488,10 +502,6 @@ CallResult<std::pair<Handle<HiddenClass>, SlotIndex>> HiddenClass::addProperty(
   assert(
       inserted &&
       "transition already exists when adding a new property to hidden class");
-
-  if (toArrayIndex(runtime.getIdentifierTable().getStringView(runtime, name))) {
-    childHandle->flags_.hasIndexLikeProperties = true;
-  }
 
   if (selfHandle->propertyMap_) {
     assert(
@@ -542,6 +552,7 @@ Handle<HiddenClass> HiddenClass::updateProperty(
     assert(
         selfHandle->propertyMap_ &&
         "propertyMap must exist in dictionary mode");
+    selfHandle->flags_ = computeFlags(selfHandle->flags_, newFlags, false);
     DictPropertyMap::getDescriptorPair(
         selfHandle->propertyMap_.getNonNull(runtime), pos)
         ->second.flags = newFlags;
@@ -605,7 +616,7 @@ Handle<HiddenClass> HiddenClass::updateProperty(
   auto childHandle = runtime.makeHandle<HiddenClass>(
       runtime.ignoreAllocationFailure(HiddenClass::create(
           runtime,
-          selfHandle->flags_,
+          computeFlags(selfHandle->flags_, newFlags, false),
           selfHandle,
           name,
           transitionFlags,
@@ -755,6 +766,7 @@ Handle<HiddenClass> HiddenClass::updatePropertyFlagsWithoutTransitions(
     DictPropertyMap::forEachMutablePropertyDescriptor(
         mapHandle, runtime, changeFlags);
   }
+  classHandle->flags_ = computeFlags(classHandle->flags_, flagsToSet, false);
 
   return std::move(classHandle);
 }

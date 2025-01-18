@@ -11,27 +11,35 @@
 'use strict';
 
 import type {
+  ComponentTypeAnnotation,
+  ComponentTypeParameter,
   DeclareClass,
   DeclaredPredicate,
   DeclareExportDeclaration,
+  DeclareComponent,
   DeclareFunction,
+  DeclareHook,
   DeclareInterface,
   DeclareModule,
   DeclareModuleExports,
+  DeclareNamespace,
   DeclareOpaqueType,
   DeclareTypeAlias,
   DeclareVariable,
   ESNode,
   FunctionTypeAnnotation,
   FunctionTypeParam,
+  HookTypeAnnotation,
   GenericTypeAnnotation,
   Identifier,
   InterfaceDeclaration,
   ObjectTypeIndexer,
   ObjectTypeInternalSlot,
   ObjectTypeProperty,
+  ObjectTypeMappedTypeProperty,
   OpaqueType,
   QualifiedTypeIdentifier,
+  QualifiedTypeofIdentifier,
   TypeAlias,
   TypeofTypeAnnotation,
   TypeParameter,
@@ -40,13 +48,15 @@ import type {Referencer} from './Referencer';
 
 import {Visitor} from './Visitor';
 import {
+  ComponentNameDefinition,
   ClassNameDefinition,
   FunctionNameDefinition,
+  HookNameDefinition,
+  NamespaceNameDefinition,
   TypeDefinition,
   TypeParameterDefinition,
   VariableDefinition,
 } from '../definition';
-import type {TypeAnnotationType} from 'hermes-estree';
 
 class TypeVisitor extends Visitor {
   +_referencer: Referencer;
@@ -81,11 +91,14 @@ class TypeVisitor extends Visitor {
 
   maybeCreateTypeScope(
     node:
+      | ComponentTypeAnnotation
       | DeclareTypeAlias
       | DeclareOpaqueType
       | DeclareInterface
       | DeclareClass
+      | DeclareComponent
       | FunctionTypeAnnotation
+      | HookTypeAnnotation
       | TypeAlias
       | OpaqueType
       | InterfaceDeclaration,
@@ -200,6 +213,23 @@ class TypeVisitor extends Visitor {
     this.visit(node.typeAnnotation);
   }
 
+  DeclareComponent(node: DeclareComponent): void {
+    this._referencer
+      .currentScope()
+      .defineIdentifier(node.id, new ComponentNameDefinition(node.id, node));
+
+    const hasTypeScope = this.maybeCreateTypeScope(node);
+
+    this.visit(node.typeParameters);
+    this.visitArray(node.params);
+    this.visit(node.rest);
+    this.visit(node.rendersType);
+
+    if (hasTypeScope) {
+      this._referencer.close(node);
+    }
+  }
+
   DeclareFunction(node: DeclareFunction): void {
     this._referencer
       .currentScope()
@@ -208,6 +238,15 @@ class TypeVisitor extends Visitor {
     // the function type is stored as an annotation on the ID
     this.visit(node.id.typeAnnotation);
     this.visit(node.predicate);
+  }
+
+  DeclareHook(node: DeclareHook): void {
+    this._referencer
+      .currentScope()
+      .defineIdentifier(node.id, new HookNameDefinition(node.id, node));
+
+    // the function type is stored as an annotation on the ID
+    this.visit(node.id.typeAnnotation);
   }
 
   DeclareInterface(node: DeclareInterface): void {
@@ -221,6 +260,16 @@ class TypeVisitor extends Visitor {
     // definition that can be referenced.
     this.visit(node.body);
 
+    this._referencer.close(node);
+  }
+
+  DeclareNamespace(node: DeclareNamespace): void {
+    this._referencer
+      .currentScope()
+      .defineIdentifier(node.id, new NamespaceNameDefinition(node.id, node));
+
+    this._referencer.scopeManager.nestDeclareNamespaceScope(node);
+    this.visit(node.body);
     this._referencer.close(node);
   }
 
@@ -258,6 +307,39 @@ class TypeVisitor extends Visitor {
     // Do not visit 'name' child to prevent name from being treated as a reference.
     // e.g. 'foo' is a parameter name in a type that should not be treated like a
     // definition or reference in `type T = (foo: string) => void`.
+    this.visit(node.typeAnnotation);
+  }
+
+  HookTypeAnnotation(node: HookTypeAnnotation): void {
+    const hasTypeScope = this.maybeCreateTypeScope(node);
+
+    this.visit(node.typeParameters);
+    this.visitArray(node.params);
+    this.visit(node.returnType);
+    this.visit(node.rest);
+
+    if (hasTypeScope) {
+      this._referencer.close(node);
+    }
+  }
+
+  ComponentTypeAnnotation(node: ComponentTypeAnnotation): void {
+    const hasTypeScope = this.maybeCreateTypeScope(node);
+
+    this.visit(node.typeParameters);
+    this.visitArray(node.params);
+    this.visit(node.rest);
+    this.visit(node.rendersType);
+
+    if (hasTypeScope) {
+      this._referencer.close(node);
+    }
+  }
+
+  ComponentTypeParameter(node: ComponentTypeParameter): void {
+    // Do not visit 'name' child to prevent name from being treated as a reference.
+    // e.g. 'foo' is a parameter name in a type that should not be treated like a
+    // definition or reference in `type T = component(foo: string)`.
     this.visit(node.typeAnnotation);
   }
 
@@ -300,6 +382,20 @@ class TypeVisitor extends Visitor {
     this.visit(node.variance);
   }
 
+  ObjectTypeMappedTypeProperty(node: ObjectTypeMappedTypeProperty): void {
+    this._referencer.scopeManager.nestTypeScope(node);
+
+    // This will create a type defintion for the `key` property.
+    this.visit(node.keyTparam);
+
+    // Visit remaining properties.
+    this.visit(node.propType);
+    this.visit(node.sourceType);
+    this.visit(node.variance);
+
+    this._referencer.close(node);
+  }
+
   OpaqueType(node: OpaqueType): void {
     this.visitOpaqueType(node);
   }
@@ -324,29 +420,33 @@ class TypeVisitor extends Visitor {
     this._referencer.currentScope().referenceDualValueType(currentNode);
   }
 
+  QualifiedTypeofIdentifier(node: QualifiedTypeofIdentifier): void {
+    // Only the first component of a qualified type identifier is a reference,
+    // e.g. 'Foo' in `type T = Foo.Bar.Baz`.
+    let currentNode = node.qualification;
+    while (currentNode.type !== 'Identifier') {
+      currentNode = currentNode.qualification;
+    }
+
+    this._referencer.currentScope().referenceDualValueType(currentNode);
+  }
+
   TypeAlias(node: TypeAlias): void {
     this.visitTypeAlias(node);
   }
 
   TypeofTypeAnnotation(node: TypeofTypeAnnotation): void {
     const identifier = (() => {
-      let currentNode: TypeAnnotationType | Identifier = node.argument;
+      let currentNode: QualifiedTypeofIdentifier | Identifier = node.argument;
       while (currentNode.type !== 'Identifier') {
-        switch (currentNode.type) {
-          case 'GenericTypeAnnotation':
-            currentNode = currentNode.id;
-            break;
-
-          case 'QualifiedTypeIdentifier':
-            currentNode = currentNode.qualification;
-            break;
-        }
+        currentNode = currentNode.qualification;
       }
       return currentNode;
     })();
 
     // typeof annotations can only reference values!
     this._referencer.currentScope().referenceValue(identifier);
+    this.visit(node.typeArguments);
   }
 
   TypeParameter(node: TypeParameter): void {

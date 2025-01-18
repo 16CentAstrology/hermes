@@ -19,6 +19,7 @@ TraceInterpreter; you could submit this if you like as a benchmark.
 However, it is typically better to submit the original, to keep the times in
 case they're ever needed.
 """
+
 import argparse
 import json
 import struct
@@ -147,6 +148,10 @@ class Normalizer:
         if "args" in rec:
             # Args is an array of values, normalize each one if it's an object
             rec["args"] = [self.normalize_value(v) for v in rec["args"]]
+
+        if "thisArg" in rec:
+            rec["thisArg"] = self.normalize_value(rec["thisArg"])
+
         return rec
 
 

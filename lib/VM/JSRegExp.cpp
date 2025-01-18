@@ -33,16 +33,16 @@ const ObjectVTable JSRegExp::vt{
         CellKind::JSRegExpKind,
         cellSize<JSRegExp>(),
         JSRegExp::_finalizeImpl,
-        nullptr,
         JSRegExp::_mallocSizeImpl,
         nullptr
 #ifdef HERMES_MEMORY_INSTRUMENTATION
         ,
-        VTable::HeapSnapshotMetadata {
-          HeapSnapshot::NodeType::Regexp, JSRegExp::_snapshotNameImpl,
-              JSRegExp::_snapshotAddEdgesImpl, JSRegExp::_snapshotAddNodesImpl,
-              nullptr
-        }
+        VTable::HeapSnapshotMetadata{
+            HeapSnapshot::NodeType::Regexp,
+            JSRegExp::_snapshotNameImpl,
+            JSRegExp::_snapshotAddEdgesImpl,
+            JSRegExp::_snapshotAddNodesImpl,
+            nullptr}
 #endif
 
         ),
@@ -214,7 +214,7 @@ ExecutionStatus JSRegExp::initializeGroupNameMappingObj(
       return ExecutionStatus::EXCEPTION;
     }
     auto idx = parsedMappings[identifier];
-    numberHandle.set(HermesValue::encodeNumberValue(idx));
+    numberHandle.set(HermesValue::encodeUntrustedNumberValue(idx));
     auto res = JSObject::defineNewOwnProperty(
         obj,
         runtime,
@@ -273,7 +273,8 @@ CallResult<RegExpMatch> performSearch(
       searchStartOffset,
       stringLength,
       &nativeMatchRanges,
-      matchFlags);
+      matchFlags,
+      runtime.getOverflowGuardForRegex());
   if (matchResult == regex::MatchRuntimeResult::StackOverflow) {
     return runtime.raiseRangeError("Maximum regex stack depth reached");
   } else if (matchResult == regex::MatchRuntimeResult::NoMatch) {

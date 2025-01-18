@@ -10,8 +10,8 @@
 #include "hermes/BCGen/HBC/Bytecode.h"
 #include "hermes/BCGen/HBC/SerializedLiteralGenerator.h"
 #include "hermes/FrontEndDefs/Builtins.h"
+#include "hermes/Regex/RegexSerialization.h"
 #include "hermes/Support/JenkinsHash.h"
-#include "hermes/Support/RegExpSerialization.h"
 #include "hermes/Support/SHA1.h"
 
 #include <cstdint>
@@ -156,7 +156,7 @@ const char *stringKindTag(StringKind::Kind kind) {
       return "i";
   }
 
-  llvm_unreachable("Unrecognised String Kind.");
+  hermes_fatal("Unrecognised String Kind.");
 }
 
 } // namespace
@@ -514,7 +514,7 @@ void BytecodeVisitor::visitInstructionsInBody(
 
 class BytecodeHasher : public BytecodeVisitor {
  protected:
-  uint32_t hash_{0};
+  JenkinsHash hash_{JenkinsHashInit};
   bool useStrings_;
   bool useIntConstants_;
   uint8_t opcode_{0xff};
@@ -739,8 +739,6 @@ void PrettyDisassembleVisitor::beforeStart(
     const uint8_t *bytecodeStart) {
   bytecodeStart_ = bytecodeStart;
   funcVirtualOffset_ = bcProvider_->getVirtualOffsetForFunction(funcId);
-  // Print source line for the function.
-  printSourceLineForOffset(0);
 }
 
 void PrettyDisassembleVisitor::preVisitInstruction(
@@ -753,10 +751,10 @@ void PrettyDisassembleVisitor::preVisitInstruction(
   uint32_t offset = ip - bytecodeStart_;
   if (label != jumpTargets_.end()) {
     os_ << "L" << label->second << ":\n";
-    printSourceLineForOffset(offset);
-    // Use the overrided indention for next line's output.
-    os_ << llvh::left_justify("", getIndentation());
   }
+  printSourceLineForOffset(offset);
+  // Use the overrided indention for next line's output.
+  os_ << llvh::left_justify("", getIndentation());
   uint32_t globalVirtualOffset = funcVirtualOffset_ + offset;
   if ((options_ & DisassemblyOptions::IncludeVirtualOffsets) ==
       DisassemblyOptions::IncludeVirtualOffsets) {
@@ -832,7 +830,7 @@ void PrettyDisassembleVisitor::printSourceLineForOffset(uint32_t opcodeOffset) {
     if (sourceLocOpt.hasValue()) {
       const std::string &fileNameStr = sourceLocOpt.getValue().fileName;
       os_ << formatString(
-                 "%s[%d:%d]",
+                 "; %s:%d:%d",
                  fileNameStr.c_str(),
                  sourceLocOpt.getValue().line,
                  sourceLocOpt.getValue().column)
@@ -981,9 +979,8 @@ void BytecodeSectionWalker::printSectionRanges(bool human) {
     std::stringstream ss;
     if (human) {
       ss << "0x" << std::hex << std::setfill('0')
-         << sectionStarts_[i] - bytecodeStart_ << ", "
-         << "0x" << std::hex << std::setfill('0')
-         << sectionEnds_[i] - bytecodeStart_ << ")\n";
+         << sectionStarts_[i] - bytecodeStart_ << ", " << "0x" << std::hex
+         << std::setfill('0') << sectionEnds_[i] - bytecodeStart_ << ")\n";
     } else {
       ss << sectionStarts_[i] - bytecodeStart_ << ", "
          << sectionEnds_[i] - bytecodeStart_ << ")\n";
@@ -1045,15 +1042,12 @@ void BytecodeDisassembler::disassembleFunctionPretty(
   // Print out switch jump tables, if any.
   auto &switchInsts = jumpVisitor.getSwitchIntructions();
   if (!switchInsts.empty()) {
-    OS << "\n "
-       << "Jump Tables: \n";
+    OS << "\n " << "Jump Tables: \n";
     for (auto *inst : switchInsts) {
-      OS << "  "
-         << "offset " << inst->iSwitchImm.op2 << "\n";
+      OS << "  " << "offset " << inst->iSwitchImm.op2 << "\n";
       switchJumpTableForEach(
           inst, [&](uint32_t jmpIdx, int32_t offset, const uint8_t *dest) {
-            OS << "   " << jmpIdx << " : "
-               << "L" << jumpTargets[dest] << "\n";
+            OS << "   " << jmpIdx << " : " << "L" << jumpTargets[dest] << "\n";
           });
     }
   }
@@ -1071,11 +1065,9 @@ void BytecodeDisassembler::disassembleFunctionRaw(
   // Print out switch jump tables, if any.
   auto &switchInsts = disassembleVisitor.getSwitchIntructions();
   if (!switchInsts.empty()) {
-    OS << "\n "
-       << "Jump Tables: \n";
+    OS << "\n " << "Jump Tables: \n";
     for (auto *inst : switchInsts) {
-      OS << "  "
-         << "offset " << inst->iSwitchImm.op2 << "\n";
+      OS << "  " << "offset " << inst->iSwitchImm.op2 << "\n";
       switchJumpTableForEach(
           inst, [&](uint32_t jmpIdx, int32_t offset, const uint8_t *dest) {
             OS << "   " << jmpIdx << " : " << offset << "\n";
@@ -1271,12 +1263,12 @@ void BytecodeDisassembler::disassemble(raw_ostream &OS) {
       } else {
         OS << llvh::format_hex(debugSourceOffset, 6);
       }
-      OS << ", lexical ";
-      uint32_t debugLexicalOffset = funcDebugOffsets->lexicalData;
-      if (debugLexicalOffset == DebugOffsets::NO_OFFSET) {
+      OS << ", scope ";
+      uint32_t debugScopeDescOffset = funcDebugOffsets->scopeDescData;
+      if (debugScopeDescOffset == DebugOffsets::NO_OFFSET) {
         OS << "none";
       } else {
-        OS << llvh::format_hex(debugLexicalOffset, 6);
+        OS << llvh::format_hex(debugScopeDescOffset, 6);
       }
       OS << ", textified callees ";
       uint32_t textifiedCalleeOffset = funcDebugOffsets->textifiedCallees;

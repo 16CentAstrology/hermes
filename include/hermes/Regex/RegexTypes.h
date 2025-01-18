@@ -22,6 +22,9 @@
 #include "llvh/ADT/SmallString.h"
 
 namespace hermes {
+
+struct UnicodeRangePoolRef;
+
 namespace regex {
 namespace constants {
 
@@ -122,7 +125,10 @@ enum class ErrorType {
   InvalidNamedReference,
 
   /// Reference to nonexistent capture group.
-  NonexistentNamedCaptureReference
+  NonexistentNamedCaptureReference,
+
+  /// Invalid Unicode property name or value
+  InvalidPropertyName,
 };
 
 /// \return an error message for the given \p error.
@@ -158,6 +164,8 @@ inline const char *messageForError(ErrorType error) {
       return "Invalid named reference";
     case ErrorType::NonexistentNamedCaptureReference:
       return "Nonexistent named capture reference";
+    case ErrorType::InvalidPropertyName:
+      return "Invalid property name";
     case ErrorType::None:
       return "No error";
   }
@@ -209,6 +217,19 @@ struct CharacterClass {
   CharacterClass(Type type, bool invert) : type_(type), inverted_(invert) {}
 };
 
+// Type wrapping up a Unicode codepoint range array.
+struct CharacterClassCodepointRanges {
+  llvh::ArrayRef<UnicodeRangePoolRef> rangeArray;
+
+  // Whether the class is inverted (\P instead of \p).
+  bool inverted_;
+
+  CharacterClassCodepointRanges(
+      llvh::ArrayRef<UnicodeRangePoolRef> rangeArray,
+      bool inverted)
+      : rangeArray(rangeArray), inverted_(inverted) {}
+};
+
 // Struct representing flags which may be used when constructing the RegExp
 class SyntaxFlags {
  private:
@@ -220,7 +241,8 @@ class SyntaxFlags {
     MULTILINE = 1 << 2,
     UCODE = 1 << 3,
     DOTALL = 1 << 4,
-    STICKY = 1 << 5
+    STICKY = 1 << 5,
+    INDICES = 1 << 6,
   };
 
  public:
@@ -233,6 +255,7 @@ class SyntaxFlags {
   uint8_t unicode : 1;
   uint8_t dotAll : 1;
   uint8_t sticky : 1;
+  uint8_t hasIndices : 1;
 
   /// \return a byte representing the flags. Bits are set based on the offsets
   /// specified above. This is used for serialising the flags to bytecode.
@@ -250,6 +273,8 @@ class SyntaxFlags {
       ret |= STICKY;
     if (dotAll)
       ret |= DOTALL;
+    if (hasIndices)
+      ret |= INDICES;
     return ret;
   }
 
@@ -270,27 +295,32 @@ class SyntaxFlags {
       ret.sticky = 1;
     if (byte & DOTALL)
       ret.dotAll = 1;
+    if (byte & INDICES)
+      ret.hasIndices = 1;
     return ret;
   }
 
   /// \return a string representing the flags
-  /// The characters are returned in the order given in ES 6 21.2.5.3
-  /// (specifically global, ignoreCase, multiline, unicode, sticky)
-  /// Note this may differ in order from the string passed in construction
-  llvh::SmallString<6> toString() const {
-    llvh::SmallString<6> result;
+  /// The characters are returned in the order given in ES2022 22.2.5.4
+  /// (specifically hasIndices, global, ignoreCase, multiline, dotAll, unicode,
+  /// sticky) Note this may differ in order from the string passed in
+  /// construction
+  llvh::SmallString<7> toString() const {
+    llvh::SmallString<7> result;
+    if (hasIndices)
+      result.push_back('d');
     if (global)
       result.push_back('g');
     if (ignoreCase)
       result.push_back('i');
     if (multiline)
       result.push_back('m');
+    if (dotAll)
+      result.push_back('s');
     if (unicode)
       result.push_back('u');
     if (sticky)
       result.push_back('y');
-    if (dotAll)
-      result.push_back('s');
     return result;
   }
 
@@ -333,6 +363,11 @@ class SyntaxFlags {
           if (ret.dotAll)
             return error;
           ret.dotAll = 1;
+          break;
+        case u'd':
+          if (ret.hasIndices)
+            return error;
+          ret.hasIndices = 1;
           break;
         default:
           return error;

@@ -128,7 +128,7 @@ CallResult<HermesValue> parseInt(void *, Runtime &runtime, NativeArgs args) {
     return HermesValue::encodeNaNValue();
   }
 
-  return HermesValue::encodeDoubleValue(
+  return HermesValue::encodeUntrustedNumberValue(
       sign * parseIntWithRadix(strView.slice(begin, realEnd), radix));
 }
 
@@ -177,21 +177,21 @@ CallResult<HermesValue> parseFloat(void *, Runtime &runtime, NativeArgs args) {
           idTable.getStringView(
               runtime, Predefined::getSymbolID(Predefined::Infinity)),
           str16))) {
-    return HermesValue::encodeDoubleValue(
+    return HermesValue::encodeUntrustedNumberValue(
         std::numeric_limits<double>::infinity());
   }
   if (LLVM_UNLIKELY(isPrefix(
           idTable.getStringView(
               runtime, Predefined::getSymbolID(Predefined::PositiveInfinity)),
           str16))) {
-    return HermesValue::encodeDoubleValue(
+    return HermesValue::encodeUntrustedNumberValue(
         std::numeric_limits<double>::infinity());
   }
   if (LLVM_UNLIKELY(isPrefix(
           idTable.getStringView(
               runtime, Predefined::getSymbolID(Predefined::NegativeInfinity)),
           str16))) {
-    return HermesValue::encodeDoubleValue(
+    return HermesValue::encodeUntrustedNumberValue(
         -std::numeric_limits<double>::infinity());
   }
   if (LLVM_UNLIKELY(isPrefix(
@@ -233,7 +233,7 @@ CallResult<HermesValue> parseFloat(void *, Runtime &runtime, NativeArgs args) {
   }
   // Now we know the prefix untill endPtr is a valid int.
   *endPtr = '\0';
-  return HermesValue::encodeDoubleValue(
+  return HermesValue::encodeUntrustedNumberValue(
       ::hermes_g_strtod(str8.data(), &endPtr));
 }
 
@@ -260,7 +260,7 @@ throwTypeError(void *ctx, Runtime &runtime, NativeArgs) {
 // NOTE: when declaring more global symbols, don't forget to update
 // "Libhermes.h".
 void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
-  GCScope gcScope{runtime, "initGlobalObject", 330};
+  GCScope gcScope{runtime, "initGlobalObject", 350};
 
   // Not enumerable, not writable, not configurable.
   DefinePropertyFlags constantDPF =
@@ -311,7 +311,7 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
       runtime,
       Predefined::getSymbolID(Predefined::Infinity),
       constantDPF,
-      runtime.makeHandle(HermesValue::encodeDoubleValue(
+      runtime.makeHandle(HermesValue::encodeUntrustedNumberValue(
           std::numeric_limits<double>::infinity()))));
 
   // 15.1.1.2 undefined.
@@ -341,7 +341,8 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
       JSObject::create(                                               \
           runtime, Handle<JSObject>::vmcast(&runtime.ErrorPrototype)) \
           .getHermesValue();
-#include "hermes/VM/NativeErrorTypes.def"
+#define AGGREGATE_ERROR_TYPE(name) NATIVE_ERROR_TYPE(name)
+#include "hermes/FrontEndDefs/NativeErrorTypes.def"
 
   // "Forward declaration" of the internal CallSite prototype. Its properties
   // will be populated later.
@@ -384,9 +385,8 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
       Predefined::getSymbolID(Predefined::length),
       clearConfigurableDPF,
       Runtime::getUndefinedValue()));
-  runtime.throwTypeErrorAccessor =
-      runtime.ignoreAllocationFailure(PropertyAccessor::create(
-          runtime, throwTypeErrorFunction, throwTypeErrorFunction));
+  runtime.throwTypeErrorAccessor = PropertyAccessor::create(
+      runtime, throwTypeErrorFunction, throwTypeErrorFunction);
 
   // Define the 'parseInt' function.
   runtime.parseIntFunction =
@@ -564,17 +564,22 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
           runtime, Handle<JSObject>::vmcast(&runtime.functionPrototype))
           .getHermesValue();
 
+  // "Forward declaration" of TextEncoder.prototype.
+  runtime.textEncoderPrototype = JSObject::create(runtime).getHermesValue();
+
   // Object constructor.
-  createObjectConstructor(runtime);
+  runtime.objectConstructor = createObjectConstructor(runtime).getHermesValue();
 
   // JSError constructor.
   runtime.errorConstructor = createErrorConstructor(runtime).getHermesValue();
 
 // All Native Error constructors.
-#define NATIVE_ERROR_TYPE(name)       \
-  create##name##Constructor(runtime); \
+#define NATIVE_ERROR_TYPE(name)                            \
+  runtime.name##Constructor =                              \
+      create##name##Constructor(runtime).getHermesValue(); \
   gcScope.clearAllHandles();
-#include "hermes/VM/NativeErrorTypes.def"
+#define AGGREGATE_ERROR_TYPE(name) NATIVE_ERROR_TYPE(name)
+#include "hermes/FrontEndDefs/NativeErrorTypes.def"
 
   // Populate the internal CallSite prototype.
   populateCallSitePrototype(runtime);
@@ -665,6 +670,9 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
   // AsyncFunction constructor (not directly exposed in the global object).
   createAsyncFunctionConstructor(runtime);
 
+  // TextEncoder constructor.
+  createTextEncoderConstructor(runtime);
+
   // %GeneratorPrototype%.
   populateGeneratorPrototype(runtime);
 
@@ -738,6 +746,12 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
   // Define the 'unescape' function.
   defineGlobalFunc(Predefined::getSymbolID(Predefined::unescape), unescape, 1);
 
+  // Define the 'atob' function.
+  defineGlobalFunc(Predefined::getSymbolID(Predefined::atob), atob, 1);
+
+  // Define the 'btoa' function.
+  defineGlobalFunc(Predefined::getSymbolID(Predefined::btoa), btoa, 1);
+
   // Define the 'decodeURI' function.
   defineGlobalFunc(
       Predefined::getSymbolID(Predefined::decodeURI), decodeURI, 1);
@@ -778,8 +792,10 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
           Runtime::makeNullHandle<JSObject>())
           .getHermesValue();
 
-  // Define the 'gc' function.
-  defineGlobalFunc(Predefined::getSymbolID(Predefined::gc), gc, 0);
+  if (jsLibFlags.enableHermesInternal) {
+    // Define the 'gc' function.
+    defineGlobalFunc(Predefined::getSymbolID(Predefined::gc), gc, 0);
+  }
 
 #ifdef HERMES_ENABLE_IR_INSTRUMENTATION
   // Define the global __instrument object

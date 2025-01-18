@@ -21,6 +21,7 @@ set(SupportSources
   RegexTest.cpp
   SNPrintfBufTest.cpp
   SourceErrorManagerTest.cpp
+  StackBoundsTest.cpp
   StatsAccumulatorTest.cpp
   StringSetVectorTest.cpp
   UnicodeTest.cpp
@@ -32,6 +33,7 @@ add_hermes_unittest(HermesSupportTests
 
 target_link_libraries(HermesSupportTests
  hermesPlatform
+ hermesRegex
  hermesSupport
  hermesPublic
  dtoa

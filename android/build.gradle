@@ -39,17 +39,17 @@ buildscript {
     System.getenv("HOME") + "/fbsource"
 
     minSdkVersion = 16
-    compileSdkVersion = 28
+    compileSdkVersion = 31
     abis = project.hasProperty('abis') ?
          project.getProperty("abis").split(",") :
          ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"]
   }
   repositories {
     google()
-    jcenter()
+    mavenCentral()
   }
   dependencies {
-    classpath 'com.android.tools.build:gradle:4.1.0'
+    classpath 'com.android.tools.build:gradle:7.3.0'
     classpath("de.undercouch:gradle-download-task:4.0.2")
   }
 }
@@ -57,7 +57,7 @@ buildscript {
 allprojects {
   repositories {
     google()
-    jcenter()
+    mavenCentral()
   }
 }
 

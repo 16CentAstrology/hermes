@@ -366,7 +366,16 @@ CallResult<SymbolID> IdentifierTable::getOrCreateIdentifier(
 StringPrimitive *IdentifierTable::getExistingStringPrimitiveOrNull(
     Runtime &runtime,
     llvh::ArrayRef<char16_t> str) {
-  auto idx = hashTable_.lookupString(str, hashString(str));
+  return getExistingStringPrimitiveOrNullWithHash(
+      runtime, str, hashString(str));
+}
+
+StringPrimitive *IdentifierTable::getExistingStringPrimitiveOrNullWithHash(
+    Runtime &runtime,
+    llvh::ArrayRef<char16_t> str,
+    uint32_t hash) {
+  assert(hash == hashString(str) && "hash is not correct");
+  auto idx = hashTable_.lookupString(str, hash);
   if (!hashTable_.isValid(idx)) {
     return nullptr;
   }
@@ -497,7 +506,7 @@ void IdentifierTable::freeUnmarkedSymbols(
   // Flip and find set bits, which will correspond to symbols that weren't
   // marked.
   markedSymbols_.flip();
-  const bool isTrackingIDs = tracker.isTrackingIDs();
+  const bool hasTrackedObjectIDs = tracker.hasTrackedObjectIDs();
   const uint32_t markedSymbolsSize = markedSymbols.size();
   for (const uint32_t i : markedSymbols_.set_bits()) {
     // Don't check any bits after the passed-in bits, which represent the number
@@ -508,7 +517,7 @@ void IdentifierTable::freeUnmarkedSymbols(
     // We never free StringPrimitives that are materialized from a lazy
     // identifier.
     if (lookupVector_[i].isNonLazyStringPrim()) {
-      if (isTrackingIDs) {
+      if (hasTrackedObjectIDs) {
         tracker.untrackSymbol(i);
       }
       freeSymbol(i);

@@ -4,19 +4,11 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *
- * @flow
+ * @flow strict
  * @format
  */
 
-/*
-This class does some very "javascripty" things in the name of
-performance which are ultimately impossible to soundly type.
-
-So instead of adding strict types and a large number of suppression
-comments, instead it is left untyped and subclasses are strictly
-typed via a separate flow declaration file.
-*/
-
+import type {Program} from 'hermes-estree';
 import type {HermesNode} from './HermesAST';
 import type {ParserOptions} from './ParserOptions';
 
@@ -24,7 +16,7 @@ import {
   HERMES_AST_VISITOR_KEYS,
   NODE_CHILD,
   NODE_LIST_CHILD,
-} from './generated/visitor-keys';
+} from './generated/ParserVisitorKeys';
 
 /**
  * The base class for transforming the Hermes AST to the desired output format.
@@ -43,7 +35,7 @@ export default class HermesASTAdapter {
    * Transform the input Hermes AST to the desired output format.
    * This modifies the input AST in place instead of constructing a new AST.
    */
-  transform(program: HermesNode): ?HermesNode {
+  transform(program: HermesNode): Program {
     // Comments are not traversed via visitor keys
     const comments = program.comments;
     for (let i = 0; i < comments.length; i++) {
@@ -66,7 +58,15 @@ export default class HermesASTAdapter {
       }
     }
 
-    return this.mapNode(program);
+    const resultNode = this.mapNode(program);
+    if (resultNode.type !== 'Program') {
+      throw new Error(
+        `HermesToESTreeAdapter: Must return a Program node, instead of "${resultNode.type}". `,
+      );
+    }
+
+    // $FlowExpectedError[incompatible-return] We know this is a program at this point.
+    return resultNode;
   }
 
   /**

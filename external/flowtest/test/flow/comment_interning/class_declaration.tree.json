@@ -1,15 +1,15 @@
 {
   "errors":[
     {
-      "loc":{"source":null,"start":{"line":11,"column":0},"end":{"line":11,"column":20}},
+      "loc":{"source":null,"start":{"line":11,"column":7},"end":{"line":11,"column":14}},
       "message":"Duplicate export for `default`"
     },
     {
-      "loc":{"source":null,"start":{"line":13,"column":0},"end":{"line":13,"column":20}},
+      "loc":{"source":null,"start":{"line":13,"column":7},"end":{"line":13,"column":14}},
       "message":"Duplicate export for `default`"
     },
     {
-      "loc":{"source":null,"start":{"line":15,"column":0},"end":{"line":15,"column":20}},
+      "loc":{"source":null,"start":{"line":15,"column":7},"end":{"line":15,"column":14}},
       "message":"Duplicate export for `default`"
     }
   ],
@@ -142,6 +142,7 @@
             "range":[143,144],
             "name":"T",
             "bound":null,
+            "const":false,
             "variance":null,
             "default":null
           }
@@ -459,6 +460,7 @@
               "range":[603,604],
               "name":"T",
               "bound":null,
+              "const":false,
               "variance":null,
               "default":null
             }
@@ -915,6 +917,7 @@
             "range":[1187,1188],
             "name":"T",
             "bound":null,
+            "const":false,
             "variance":null,
             "default":null
           }
@@ -1022,6 +1025,7 @@
             "range":[1388,1389],
             "name":"T",
             "bound":null,
+            "const":false,
             "variance":null,
             "default":null
           }

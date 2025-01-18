@@ -15,9 +15,6 @@ const char *globalReturnObjectTrace() {
   return R"###(
 {
   "globalObjID": 1,
-  "env": {
-    "callsToHermesInternalGetInstrumentedStats": [],
-  },
   "trace": [
     {
       "type": "BeginExecJSRecord",
@@ -40,7 +37,11 @@ const char *globalReturnObjectTrace() {
       "objID": 10,
       "propID": "propIDTag:2",
       "propName": "a",
-      "value": "object:11"
+    },
+    {
+      "type": "ReturnToNativeRecord",
+      "time": 0,
+      "retval": "object:11"
     },
     {
       "type": "CallFromNativeRecord",

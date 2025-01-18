@@ -15,9 +15,6 @@ const char *surrogatePairStringTrace() {
   return R"###(
 {
   "globalObjID": 1,
-  "env": {
-    "callsToHermesInternalGetInstrumentedStats": [],
-  },
   "trace": [
     {
       "type": "CreatePropNameIDRecord",
@@ -61,7 +58,7 @@ const char *surrogatePairStringTrace() {
       "type": "CreateStringRecord",
       "objID": 23,
       "encoding": "UTF-8",
-      "chars": "\ud83d\ude2c\ud801\udc37 abc \ud83e\ude00"
+      "chars": "\u00f0\u009f\u0098\u00ac\u00f0\u0090\u0090\u00b7 abc \u00f0\u009f\u00a8\u0080"
     },
     {
       "type": "ArrayWriteRecord",

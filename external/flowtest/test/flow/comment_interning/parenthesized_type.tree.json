@@ -528,7 +528,8 @@
           "range":[941,944]
         },
         "rest":null,
-        "typeParameters":null
+        "typeParameters":null,
+        "this":null
       }
     },
     {
@@ -786,11 +787,12 @@
         "loc":{"source":null,"start":{"line":39,"column":36},"end":{"line":39,"column":44}},
         "range":[1369,1377],
         "argument":{
-          "type":"NumberLiteralTypeAnnotation",
+          "type":"Identifier",
           "loc":{"source":null,"start":{"line":39,"column":43},"end":{"line":39,"column":44}},
           "range":[1376,1377],
-          "value":1,
-          "raw":"1"
+          "name":"x",
+          "typeAnnotation":null,
+          "optional":false
         }
       }
     },
@@ -827,7 +829,7 @@
         ],
         "loc":{"source":null,"start":{"line":41,"column":35},"end":{"line":41,"column":45}},
         "range":[1438,1448],
-        "types":[
+        "elementTypes":[
           {
             "type":"AnyTypeAnnotation",
             "loc":{"source":null,"start":{"line":41,"column":36},"end":{"line":41,"column":39}},
@@ -838,7 +840,8 @@
             "loc":{"source":null,"start":{"line":41,"column":41},"end":{"line":41,"column":44}},
             "range":[1444,1447]
           }
-        ]
+        ],
+        "inexact":false
       }
     },
     {

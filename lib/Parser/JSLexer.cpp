@@ -45,7 +45,7 @@ static llvh::DenseMap<llvh::StringRef, uint32_t> initializeHTMLEntities() {
   llvh::DenseMap<llvh::StringRef, uint32_t> entities{};
 
 #define HTML_ENTITY(NAME, VALUE) \
-  entities.insert({llvh::StringLiteral(#NAME), VALUE});
+  entities.insert({ llvh::StringLiteral(#NAME), VALUE });
 #include "hermes/Parser/HTMLEntities.def"
 
   return entities;
@@ -111,6 +111,72 @@ void JSLexer::initializeReservedIdentifiers() {
   // Add all reserved words to the identifier table
 #define RESWORD(name) resWordIdent(TokenKind::rw_##name) = getIdentifier(#name);
 #include "hermes/Parser/TokenKinds.def"
+}
+
+bool JSLexer::isLetFollowedByDeclStart() {
+  assert(
+      token_.getKind() == TokenKind::identifier &&
+      token_.getIdentifier()->str() == "let");
+
+  /// Skip over whitespace that doesn't need to modify any flags in the JSLexer.
+  /// Does not skip over newlines due to newLineBeforeCurrentToken_.
+  /// Does not skip over comments.
+  /// Used to avoid lookahead.
+  /// \return the character at curCharPtr_ at the end.
+  auto optimisticSkipWhitespace = [this]() -> char {
+    while (char cur = *curCharPtr_) {
+      switch (cur) {
+        case ' ':
+        case '\t':
+        case '\v':
+        case '\f':
+          ++curCharPtr_;
+          continue;
+
+        default:
+          return cur;
+      }
+    }
+    return '\0';
+  };
+
+  const char curChar = optimisticSkipWhitespace();
+
+  // Fast path.
+  // If the next character is a '{', then this is a let declaration.
+  // If the next character is a '[', then this is a let declaration.
+  if (curChar == '{' || curChar == '[') {
+    return true;
+  }
+
+  // Fast path.
+  // If the next character starts an ASCII identifier,
+  // then this is a declaration.
+  // Don't check for UTF-8 here to avoid having to read a codepoint
+  // or determine Unicode letter value membership.
+  if (isASCIIIdentifierStart(curChar)) {
+    // If the next characters are 'in', this may result in 'in' or 'instanceof'.
+    // So we'd actually have to run a lookahead.
+    if (!(curChar == 'i' && curCharPtr_[1] == 'n')) {
+      return true;
+    }
+  }
+
+  // Slow path.
+  // There might be comments, newlines, UTF-8 identifiers, etc.
+  // If there's a next token and it's an identifier, '[', '{', then this is a
+  // declaration. Otherwise, it's not.
+  // Pass RequireNoNewLine=false because
+  //   let
+  //   x = 3;
+  // is supposed to parse as a let declaration of x, no ASI here.
+  // https://262.ecma-international.org/14.0/#prod-LexicalBinding
+  OptValue<TokenKind> nextTokenKind =
+      lookahead1</* RequireNoNewLine=*/false>(llvh::None);
+  return nextTokenKind.hasValue() &&
+      (*nextTokenKind == TokenKind::identifier ||
+       *nextTokenKind == TokenKind::l_brace ||
+       *nextTokenKind == TokenKind::l_square);
 }
 
 const Token *JSLexer::advance(GrammarContext grammarContext) {
@@ -428,6 +494,7 @@ const Token *JSLexer::advance(GrammarContext grammarContext) {
           scanLineComment(curCharPtr_);
           continue;
         }
+        token_.setStart(curCharPtr_);
         if (!scanPrivateIdentifier()) {
           continue;
         }
@@ -621,7 +688,7 @@ const Token *JSLexer::advanceInJSXChild() {
           break;
         }
         // Fall-through to start scanning text.
-        LLVM_FALLTHROUGH;
+        [[fallthrough]];
 
       default: {
         const char *start = curCharPtr_;
@@ -901,11 +968,22 @@ const Token *JSLexer::rescanRBraceInTemplateLiteral() {
   return &token_;
 }
 
+template <bool RequireNoNewLine>
 OptValue<TokenKind> JSLexer::lookahead1(OptValue<TokenKind> expectedToken) {
+  // We support TokenKind::question here because of Flow's render types.
+  // `renders?` is not a token itself (as making it a token would be bad for
+  // identifier parsing performance). When we are parsing something like
+  // (renders?: number) => string and the cursor is under the `?`, we need to
+  // perform a lookahead to see if the next token is a colon, in which case
+  // this is a function parameter, and if not then parse as a render type.
   assert(
-      (token_.getKind() == TokenKind::identifier || token_.isResWord()) &&
+      (token_.getKind() == TokenKind::identifier || token_.isResWord() ||
+       token_.getKind() == TokenKind::question) &&
       "unsupported current token");
-  UniqueString *savedIdent = token_.getResWordOrIdentifier();
+  UniqueString *savedIdent;
+  if (token_.getKind() == TokenKind::identifier || token_.isResWord()) {
+    savedIdent = token_.getResWordOrIdentifier();
+  }
   TokenKind savedKind = token_.getKind();
   SMLoc start = token_.getStartLoc();
   SMLoc end = token_.getEndLoc();
@@ -923,7 +1001,7 @@ OptValue<TokenKind> JSLexer::lookahead1(OptValue<TokenKind> expectedToken) {
 
   advance();
   OptValue<TokenKind> kind = token_.getKind();
-  if (isNewLineBeforeCurrentToken()) {
+  if (RequireNoNewLine && isNewLineBeforeCurrentToken()) {
     // Disregard anything after LineTerminator.
     kind = llvh::None;
   } else if (expectedToken == kind) {
@@ -935,6 +1013,8 @@ OptValue<TokenKind> JSLexer::lookahead1(OptValue<TokenKind> expectedToken) {
   token_.setEnd(end.getPointer());
   if (savedKind == TokenKind::identifier) {
     token_.setIdentifier(savedIdent);
+  } else if (savedKind == TokenKind::question) {
+    token_.setPunctuator(TokenKind::question);
   } else {
     token_.setResWord(savedKind, savedIdent);
   }
@@ -947,6 +1027,9 @@ OptValue<TokenKind> JSLexer::lookahead1(OptValue<TokenKind> expectedToken) {
 
   return kind;
 }
+
+template OptValue<TokenKind> JSLexer::lookahead1<true>(OptValue<TokenKind>);
+template OptValue<TokenKind> JSLexer::lookahead1<false>(OptValue<TokenKind>);
 
 uint32_t JSLexer::consumeUnicodeEscape() {
   assert(*curCharPtr_ == '\\');
@@ -1091,7 +1174,7 @@ void JSLexer::consumeIdentifierParts() {
         errorRange(
             startLoc,
             "Unicode escape \\u" + Twine::utohexstr(cp) +
-                "is not a valid identifier codepoint");
+                " is not a valid identifier codepoint");
       } else {
         appendUnicodeToStorage(cp);
       }
@@ -1288,10 +1371,17 @@ void JSLexer::scanLineComment(const char *start) {
   if (!comment.consume_front(llvh::StringLiteral("//# ")))
     return;
 
-  if (comment.consume_front(llvh::StringLiteral("sourceURL=")))
+  if (comment.consume_front(llvh::StringLiteral("sourceURL="))) {
+    sourceURL_ = comment;
+#ifndef STATIC_HERMES
     sm_.setSourceUrl(bufId_, comment);
-  else if (comment.consume_front(llvh::StringLiteral("sourceMappingURL=")))
+#endif
+  } else if (comment.consume_front(llvh::StringLiteral("sourceMappingURL="))) {
+    sourceMappingURL_ = comment;
+#ifndef STATIC_HERMES
     sm_.setSourceMappingUrl(bufId_, comment);
+#endif
+  }
 }
 
 const char *JSLexer::skipBlockComment(const char *start) {
@@ -1652,6 +1742,7 @@ TokenKind JSLexer::scanReservedWord(const char *start, unsigned length) {
       case TokenKind::rw_static:
       case TokenKind::rw_yield:
         rw = TokenKind::identifier;
+        break;
       default:
         break;
     }
@@ -1708,7 +1799,17 @@ void JSLexer::scanIdentifierFastPath(const char *start) {
 template <JSLexer::IdentifierMode Mode>
 void JSLexer::scanIdentifierParts() {
   consumeIdentifierParts<Mode>();
-  token_.setIdentifier(getIdentifier(tmpStorage_.str()));
+  auto rw =
+      scanReservedWord(tmpStorage_.str().begin(), tmpStorage_.str().size());
+  if (rw != TokenKind::identifier) {
+    token_.setResWord(rw, resWordIdent(rw));
+    sm_.warning(
+        {token_.getStartLoc(), SMLoc::getFromPointer(curCharPtr_)},
+        "scanning identifier with unicode escape as reserved word",
+        Subsystem::Lexer);
+  } else {
+    token_.setIdentifier(getIdentifier(tmpStorage_.str()));
+  }
 }
 
 bool JSLexer::scanPrivateIdentifier() {
@@ -1729,9 +1830,6 @@ bool JSLexer::scanPrivateIdentifier() {
     return false;
   }
 
-  // Reset the start to the '#' because the scanIdentifier functions were
-  // not aware of the true start of the token.
-  token_.setStart(start);
   // Parsed a resword or identifier.
   // Convert the TokenKind to private_identifier after the fact.
   // This avoids adding another Mode to IdentifierMode.
@@ -1807,7 +1905,7 @@ void JSLexer::scanString() {
             appendUnicodeToStorage(0);
             break;
           }
-          LLVM_FALLTHROUGH;
+          [[fallthrough]];
         case '1':
         case '2':
         case '3':
@@ -1996,7 +2094,7 @@ void JSLexer::scanTemplateLiteral() {
             appendUnicodeToStorage(0);
             break;
           }
-          // fall-through
+          [[fallthrough]];
 
         case '1':
         case '2':

@@ -10,6 +10,8 @@
 
 import type {
   ESNode,
+  ComponentParameter,
+  ComponentTypeParameter,
   ClassMember,
   EnumBooleanMember,
   EnumDefaultedMember,
@@ -37,6 +39,8 @@ export type RemoveNodeMutation = $ReadOnly<{
   type: 'removeNode',
   node:
     | ClassMember
+    | ComponentParameter
+    | ComponentTypeParameter
     | EnumBooleanMember
     | EnumDefaultedMember
     | EnumNumberMember
@@ -66,6 +70,7 @@ export function createRemoveNodeMutation(
 const VALID_ENUM_MEMBER_PARENTS: $ReadOnlyArray<string> = [
   'EnumBooleanBody',
   'EnumNumberBody',
+  'EnumBigIntBody',
   'EnumStringBody',
   'EnumSymbolBody',
 ];
@@ -77,6 +82,10 @@ const VALID_FUNCTION_PARAMETER_PARENTS: $ReadOnlyArray<string> = [
 const VALID_PROPERTY_PARENTS: $ReadOnlyArray<string> = [
   'ObjectExpression',
   'ObjectPattern',
+];
+const VALID_COMPONENT_TYPE_PARAMETER_PARENTS: $ReadOnlyArray<string> = [
+  'DeclareComponent',
+  'ComponentTypeAnnotation',
 ];
 function getRemovalParent(node: RemoveNodeMutation['node']): $ReadOnly<{
   type: 'array',
@@ -117,6 +126,15 @@ function getRemovalParent(node: RemoveNodeMutation['node']): $ReadOnly<{
       case 'EnumStringMember':
         assertParent(VALID_ENUM_MEMBER_PARENTS);
         return 'members';
+
+      // Components
+      case 'ComponentParameter':
+        assertParent('ComponentDeclaration');
+        return 'params';
+
+      case 'ComponentTypeParameter':
+        assertParent(VALID_COMPONENT_TYPE_PARAMETER_PARENTS);
+        return 'params';
 
       // FunctionParameter
       case 'AssignmentPattern':
@@ -188,6 +206,7 @@ function getRemovalParent(node: RemoveNodeMutation['node']): $ReadOnly<{
           case 'ArrowFunctionExpression':
           case 'FunctionDeclaration':
           case 'FunctionExpression':
+          case 'ComponentDeclaration':
             return 'params';
 
           case 'ArrayPattern':
@@ -196,8 +215,9 @@ function getRemovalParent(node: RemoveNodeMutation['node']): $ReadOnly<{
           case 'ObjectPattern':
             return 'properties';
 
-          case 'CallExpression':
+          // $FlowFixMe[incompatible-type]
           case 'OptionalCallExpression':
+          case 'CallExpression':
           case 'NewExpression':
             return 'arguments';
 
@@ -207,6 +227,7 @@ function getRemovalParent(node: RemoveNodeMutation['node']): $ReadOnly<{
                 'ArrowFunctionExpression',
                 'FunctionDeclaration',
                 'FunctionExpression',
+                'ComponentDeclaration',
                 'ArrayPattern',
                 'ObjectPattern',
                 'CallExpression',
@@ -225,8 +246,9 @@ function getRemovalParent(node: RemoveNodeMutation['node']): $ReadOnly<{
           case 'ObjectExpression':
             return 'properties';
 
-          case 'CallExpression':
+          // $FlowFixMe[incompatible-type]
           case 'OptionalCallExpression':
+          case 'CallExpression':
           case 'NewExpression':
             return 'arguments';
 

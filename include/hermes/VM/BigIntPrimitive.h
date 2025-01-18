@@ -157,7 +157,8 @@ class BigIntPrimitive final
   }
 
   /// \return This bigint converted to a string in \p radix.
-  CallResult<HermesValue> toString(Runtime &runtime, uint8_t radix) const;
+  static CallResult<HermesValue>
+  toString(Runtime &runtime, PseudoHandle<BigIntPrimitive> self, uint8_t radix);
 
   /// \return \p src % (2n ** \p n), sign extended; \p n-th bit is the sign bit.
   static CallResult<HermesValue>
@@ -298,9 +299,7 @@ class BigIntPrimitive final
   }
 
   /// \return R(Z(*this))
-  double toDouble() const {
-    return bigint::toDouble(this->getImmutableRefUnsafe());
-  }
+  CallResult<double> toDouble(Runtime &runtime) const;
 
  private:
   static ExecutionStatus raiseOnError(
@@ -333,8 +332,7 @@ class BigIntPrimitive final
     template <typename... Args>
     explicit SafeBigIntRef(Runtime &rt, Args &&...args)
 #ifndef HERMES_SLOW_DEBUG
-        : BigIntRefTy{std::forward<Args>(args)...} {
-    }
+        : BigIntRefTy{std::forward<Args>(args)...} {}
 #else // HERMES_SLOW_DEBUG
         : BigIntRefTy{std::forward<Args>(args)...}, noAlloc(rt) {
     }

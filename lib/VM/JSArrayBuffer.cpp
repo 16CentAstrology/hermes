@@ -21,15 +21,16 @@ const ObjectVTable JSArrayBuffer::vt{
         CellKind::JSArrayBufferKind,
         cellSize<JSArrayBuffer>(),
         _finalizeImpl,
-        nullptr,
         _mallocSizeImpl,
         nullptr
 #ifdef HERMES_MEMORY_INSTRUMENTATION
         ,
-        VTable::HeapSnapshotMetadata {
-          HeapSnapshot::NodeType::Object, nullptr, _snapshotAddEdgesImpl,
-              _snapshotAddNodesImpl, nullptr
-        }
+        VTable::HeapSnapshotMetadata{
+            HeapSnapshot::NodeType::Object,
+            nullptr,
+            _snapshotAddEdgesImpl,
+            _snapshotAddNodesImpl,
+            nullptr}
 #endif
         ),
     _getOwnIndexedRangeImpl,

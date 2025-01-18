@@ -12,7 +12,7 @@
 
 import type {Program} from 'hermes-estree';
 
-import visitorKeys from '../HermesESLintVisitorKeys';
+import {FlowVisitorKeys} from 'hermes-parser';
 import {Referencer} from './referencer';
 import {ScopeManager} from './ScopeManager';
 
@@ -54,8 +54,20 @@ type AnalyzeOptions = $ReadOnly<{
    * https://facebook.github.io/fbt/
    */
   fbt: boolean,
+
+  /**
+   * Support experimental component syntax
+   *
+   * Defaults to `true`.
+   */
+  enableExperimentalComponentSyntax?: boolean,
+
+  /**
+   * Support experimental Flow match syntax
+   */
+  enableExperimentalFlowMatchSyntax?: boolean,
 }>;
-type PartialAnalyzeOptions = $ReadOnly<$Partial<AnalyzeOptions>>;
+type PartialAnalyzeOptions = $ReadOnly<Partial<AnalyzeOptions>>;
 
 const DEFAULT_OPTIONS: AnalyzeOptions = {
   globalReturn: false,
@@ -131,7 +143,7 @@ function analyze(
   });
   const referencer = new Referencer(
     {
-      childVisitorKeys: visitorKeys,
+      childVisitorKeys: FlowVisitorKeys,
       fbtSupport: providedOptions?.fbt ?? DEFAULT_OPTIONS.fbt,
       jsxPragma: getJsxPragma(ast, providedOptions),
       jsxFragmentName: getJsxFragmentPragma(ast, providedOptions),

@@ -321,6 +321,12 @@ CallResult<PseudoHandle<JSObject>> iteratorNext(
     llvh::Optional<Handle<>> value = llvh::None);
 
 /// ES6.0 7.4.5
+/// \return ? Get(iterResult, "value").
+CallResult<PseudoHandle<HermesValue>> iteratorValue(
+    Runtime &runtime,
+    Handle<JSObject> iterResult);
+
+/// ES2023 7.4.6
 /// \return a null pointer instead of the boolean false.
 CallResult<Handle<JSObject>> iteratorStep(
     Runtime &runtime,
@@ -331,6 +337,12 @@ CallResult<Handle<JSObject>> iteratorStep(
 /// not thrown.
 ExecutionStatus
 iteratorClose(Runtime &runtime, Handle<JSObject> iterator, Handle<> completion);
+
+/// This function combines ES2023 7.4.12 IterableToList and 7.3.18
+/// CreateArrayFromList into one API.
+CallResult<Handle<JSArray>> iterableToArray(
+    Runtime &runtime,
+    Handle<HermesValue> items);
 
 /// Some types of errors are considered "uncatchable" by the VM.
 /// If any native code wants to catch an error, it needs to check that the value
@@ -443,9 +455,16 @@ ExecutionStatus toPropertyDescriptor(
     MutableHandle<> &valueOrAccessor);
 
 /// ES9 6.2.5.4 FromPropertyDescriptor
+/// \p dpFlags is used to create the property descriptor object.
+/// If dpFlags.isAccessor() is true, it will be an Acessor Property Descriptor
+/// and so it will have getter and setter fields (they might be undefined).
+/// If dpFlags.isAccessor() is false, it will be a Data Property Descriptor, and
+/// so it will have value field, and also will have writable field if
+/// setWritable is true. enumurable and configurable fields will be set if
+/// setEnumurable and setConfigurable are set to true respectively.
 CallResult<HermesValue> objectFromPropertyDescriptor(
     Runtime &runtime,
-    ComputedPropertyDescriptor desc,
+    DefinePropertyFlags dpFlags,
     Handle<> valueOrAccessor);
 
 /// ES2022 21.2.1.1.1 NumberToBigInt(number)
@@ -458,10 +477,18 @@ bool isIntegralNumber(double number);
 CallResult<HermesValue> toBigInt_RJS(Runtime &runtime, Handle<> value);
 
 // ES2022 7.1.14 StringToBigInt
-CallResult<HermesValue> stringToBigInt_RJS(Runtime &runtime, Handle<> value);
+CallResult<HermesValue> stringToBigInt(Runtime &runtime, Handle<> value);
 
 // ES2022 21.2.3 Properties of the BigInt Prototype Object - thisBigIntValue
 CallResult<HermesValue> thisBigIntValue(Runtime &runtime, Handle<> value);
+
+// ES2023 9.1.1.4.14 HasRestrictedGlobalProperty ( N )
+// The HasRestrictedGlobalProperty concrete method of a Global Environment
+// Record envRec takes argument N (a String) and returns either a normal
+// completion containing a Boolean or a throw completion. It determines if the
+// argument identifier is the name of a property of the global object that must
+// not be shadowed by a global lexical binding.
+bool hasRestrictedGlobalProperty(Runtime &runtime, SymbolID N);
 
 } // namespace vm
 } // namespace hermes

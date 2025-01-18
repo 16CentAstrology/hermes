@@ -62,6 +62,107 @@ Value callGlobalFunction(Runtime& runtime, const char* name, const Value& arg) {
   return f.call(runtime, arg);
 }
 
+// Given a sequence of UTF8 encoded bytes, advance the input to past where a
+// 32-bit unicode codepoint as been decoded and return the codepoint. If the
+// UTF8 encoding is invalid, then return the value with the unicode replacement
+// character (U+FFFD). This decoder also relies on zero termination at end of
+// the input for bound checks.
+// \param input char pointer pointing to the current character
+// \return Unicode codepoint
+uint32_t decodeUTF8(const char*& input) {
+  uint32_t ch = (unsigned char)input[0];
+  if (ch <= 0x7f) {
+    input += 1;
+    return ch;
+  }
+  uint32_t ret;
+  constexpr uint32_t replacementCharacter = 0xFFFD;
+  if ((ch & 0xE0) == 0xC0) {
+    uint32_t ch1 = (unsigned char)input[1];
+    if ((ch1 & 0xC0) != 0x80) {
+      input += 1;
+      return replacementCharacter;
+    }
+    ret = ((ch & 0x1F) << 6) | (ch1 & 0x3F);
+    input += 2;
+    if (ret <= 0x7F) {
+      return replacementCharacter;
+    }
+  } else if ((ch & 0xF0) == 0xE0) {
+    uint32_t ch1 = (unsigned char)input[1];
+    if ((ch1 & 0x40) != 0 || (ch1 & 0x80) == 0) {
+      input += 1;
+      return replacementCharacter;
+    }
+    uint32_t ch2 = (unsigned char)input[2];
+    if ((ch2 & 0x40) != 0 || (ch2 & 0x80) == 0) {
+      input += 2;
+      return replacementCharacter;
+    }
+    ret = ((ch & 0x0F) << 12) | ((ch1 & 0x3F) << 6) | (ch2 & 0x3F);
+    input += 3;
+    if (ret <= 0x7FF) {
+      return replacementCharacter;
+    }
+  } else if ((ch & 0xF8) == 0xF0) {
+    uint32_t ch1 = (unsigned char)input[1];
+    if ((ch1 & 0x40) != 0 || (ch1 & 0x80) == 0) {
+      input += 1;
+      return replacementCharacter;
+    }
+    uint32_t ch2 = (unsigned char)input[2];
+    if ((ch2 & 0x40) != 0 || (ch2 & 0x80) == 0) {
+      input += 2;
+      return replacementCharacter;
+    }
+    uint32_t ch3 = (unsigned char)input[3];
+    if ((ch3 & 0x40) != 0 || (ch3 & 0x80) == 0) {
+      input += 3;
+      return replacementCharacter;
+    }
+    ret = ((ch & 0x07) << 18) | ((ch1 & 0x3F) << 12) | ((ch2 & 0x3F) << 6) |
+        (ch3 & 0x3F);
+    input += 4;
+    if (ret <= 0xFFFF) {
+      return replacementCharacter;
+    }
+    if (ret > 0x10FFFF) {
+      return replacementCharacter;
+    }
+  } else {
+    input += 1;
+    return replacementCharacter;
+  }
+  return ret;
+}
+
+// Given a valid 32-bit unicode codepoint, encode it as UTF-16 into the output.
+void encodeUTF16(std::u16string& out, uint32_t cp) {
+  if (cp < 0x10000) {
+    out.push_back((uint16_t)cp);
+    return;
+  }
+  cp -= 0x10000;
+  uint16_t highSurrogate = 0xD800 + ((cp >> 10) & 0x3FF);
+  out.push_back(highSurrogate);
+  uint16_t lowSurrogate = 0xDC00 + (cp & 0x3FF);
+  out.push_back(lowSurrogate);
+}
+
+// Convert the UTF8 encoded string into a UTF16 encoded string. If the
+// input is not valid UTF8, the replacement character (U+FFFD) is used to
+// represent the invalid sequence.
+std::u16string convertUTF8ToUTF16(const std::string& utf8) {
+  std::u16string ret;
+  const char* curr = utf8.data();
+  const char* end = curr + utf8.length();
+  while (curr < end) {
+    auto cp = decodeUTF8(curr);
+    encodeUTF16(ret, cp);
+  }
+  return ret;
+}
+
 } // namespace
 
 Buffer::~Buffer() = default;
@@ -109,12 +210,16 @@ Instrumentation& Runtime::instrumentation() {
     void startHeapSampling(size_t) override {}
     void stopHeapSampling(std::ostream&) override {}
 
-    void createSnapshotToFile(const std::string&) override {
+    void createSnapshotToFile(
+        const std::string& /*path*/,
+        const HeapSnapshotOptions& /*options*/) override {
       throw JSINativeException(
           "Default instrumentation cannot create a heap snapshot");
     }
 
-    void createSnapshotToStream(std::ostream&) override {
+    void createSnapshotToStream(
+        std::ostream& /*os*/,
+        const HeapSnapshotOptions& /*options*/) override {
       throw JSINativeException(
           "Default instrumentation cannot create a heap snapshot");
     }
@@ -143,7 +248,54 @@ Value Runtime::createValueFromJsonUtf8(const uint8_t* json, size_t length) {
   return parseJson.call(*this, String::createFromUtf8(*this, json, length));
 }
 
-Pointer& Pointer::operator=(Pointer&& other) {
+std::u16string Runtime::utf16(const PropNameID& sym) {
+  auto utf8Str = utf8(sym);
+  return convertUTF8ToUTF16(utf8Str);
+}
+
+std::u16string Runtime::utf16(const String& str) {
+  auto utf8Str = utf8(str);
+  return convertUTF8ToUTF16(utf8Str);
+}
+
+void Runtime::getStringData(
+    const jsi::String& str,
+    void* ctx,
+    void (*cb)(void* ctx, bool ascii, const void* data, size_t num)) {
+  auto utf16Str = utf16(str);
+  cb(ctx, false, utf16Str.data(), utf16Str.size());
+}
+
+void Runtime::getPropNameIdData(
+    const jsi::PropNameID& sym,
+    void* ctx,
+    void (*cb)(void* ctx, bool ascii, const void* data, size_t num)) {
+  auto utf16Str = utf16(sym);
+  cb(ctx, false, utf16Str.data(), utf16Str.size());
+}
+
+void Runtime::setPrototypeOf(const Object& object, const Value& prototype) {
+  auto setPrototypeOfFn = global()
+                              .getPropertyAsObject(*this, "Object")
+                              .getPropertyAsFunction(*this, "setPrototypeOf");
+  setPrototypeOfFn.call(*this, object, prototype).asObject(*this);
+}
+
+Value Runtime::getPrototypeOf(const Object& object) {
+  auto setPrototypeOfFn = global()
+                              .getPropertyAsObject(*this, "Object")
+                              .getPropertyAsFunction(*this, "getPrototypeOf");
+  return setPrototypeOfFn.call(*this, object);
+}
+
+Object Runtime::createObjectWithPrototype(const Value& prototype) {
+  auto createFn = global()
+                      .getPropertyAsObject(*this, "Object")
+                      .getPropertyAsFunction(*this, "create");
+  return createFn.call(*this, prototype).asObject(*this);
+}
+
+Pointer& Pointer::operator=(Pointer&& other) noexcept {
   if (ptr_) {
     ptr_->invalidate();
   }
@@ -218,7 +370,7 @@ Function Object::asFunction(Runtime& runtime) && {
   return std::move(*this).getFunction(runtime);
 }
 
-Value::Value(Value&& other) : Value(other.kind_) {
+Value::Value(Value&& other) noexcept : Value(other.kind_) {
   if (kind_ == BooleanKind) {
     data_.boolean = other.data_.boolean;
   } else if (kind_ == NumberKind) {
@@ -427,11 +579,9 @@ JSError::JSError(Runtime& rt, std::string msg) : message_(std::move(msg)) {
     setValue(
         rt,
         callGlobalFunction(rt, "Error", String::createFromUtf8(rt, message_)));
-  } catch (const std::exception& ex) {
+  } catch (const JSIException& ex) {
     message_ = std::string(ex.what()) + " (while raising " + message_ + ")";
     setValue(rt, String::createFromUtf8(rt, message_));
-  } catch (...) {
-    setValue(rt, Value());
   }
 }
 
@@ -442,10 +592,8 @@ JSError::JSError(Runtime& rt, std::string msg, std::string stack)
     e.setProperty(rt, "message", String::createFromUtf8(rt, message_));
     e.setProperty(rt, "stack", String::createFromUtf8(rt, stack_));
     setValue(rt, std::move(e));
-  } catch (const std::exception& ex) {
+  } catch (const JSIException& ex) {
     setValue(rt, String::createFromUtf8(rt, ex.what()));
-  } catch (...) {
-    setValue(rt, Value());
   }
 }
 
@@ -454,77 +602,77 @@ JSError::JSError(std::string what, Runtime& rt, Value&& value)
   setValue(rt, std::move(value));
 }
 
+JSError::JSError(Value&& value, std::string message, std::string stack)
+    : JSIException(message + "\n\n" + stack),
+      value_(std::make_shared<Value>(std::move(value))),
+      message_(std::move(message)),
+      stack_(std::move(stack)) {}
+
 void JSError::setValue(Runtime& rt, Value&& value) {
   value_ = std::make_shared<Value>(std::move(value));
 
-  try {
-    if ((message_.empty() || stack_.empty()) && value_->isObject()) {
-      auto obj = value_->getObject(rt);
-
-      if (message_.empty()) {
-        try {
-          Value message = obj.getProperty(rt, "message");
-          if (!message.isUndefined() && !message.isString()) {
-            message = callGlobalFunction(rt, "String", message);
-          }
-          if (message.isString()) {
-            message_ = message.getString(rt).utf8(rt);
-          } else if (!message.isUndefined()) {
-            message_ = "String(e.message) is a " + kindToString(message, &rt);
-          }
-        } catch (const std::exception& ex) {
-          message_ = std::string("[Exception while creating message string: ") +
-              ex.what() + "]";
-        }
-      }
-
-      if (stack_.empty()) {
-        try {
-          Value stack = obj.getProperty(rt, "stack");
-          if (!stack.isUndefined() && !stack.isString()) {
-            stack = callGlobalFunction(rt, "String", stack);
-          }
-          if (stack.isString()) {
-            stack_ = stack.getString(rt).utf8(rt);
-          } else if (!stack.isUndefined()) {
-            stack_ = "String(e.stack) is a " + kindToString(stack, &rt);
-          }
-        } catch (const std::exception& ex) {
-          message_ = std::string("[Exception while creating stack string: ") +
-              ex.what() + "]";
-        }
-      }
-    }
+  if ((message_.empty() || stack_.empty()) && value_->isObject()) {
+    auto obj = value_->getObject(rt);
 
     if (message_.empty()) {
       try {
-        if (value_->isString()) {
-          message_ = value_->getString(rt).utf8(rt);
-        } else {
-          Value message = callGlobalFunction(rt, "String", *value_);
-          if (message.isString()) {
-            message_ = message.getString(rt).utf8(rt);
-          } else {
-            message_ = "String(e) is a " + kindToString(message, &rt);
-          }
+        Value message = obj.getProperty(rt, "message");
+        if (!message.isUndefined() && !message.isString()) {
+          message = callGlobalFunction(rt, "String", message);
         }
-      } catch (const std::exception& ex) {
+        if (message.isString()) {
+          message_ = message.getString(rt).utf8(rt);
+        } else if (!message.isUndefined()) {
+          message_ = "String(e.message) is a " + kindToString(message, &rt);
+        }
+      } catch (const JSIException& ex) {
         message_ = std::string("[Exception while creating message string: ") +
             ex.what() + "]";
       }
     }
 
     if (stack_.empty()) {
-      stack_ = "no stack";
+      try {
+        Value stack = obj.getProperty(rt, "stack");
+        if (!stack.isUndefined() && !stack.isString()) {
+          stack = callGlobalFunction(rt, "String", stack);
+        }
+        if (stack.isString()) {
+          stack_ = stack.getString(rt).utf8(rt);
+        } else if (!stack.isUndefined()) {
+          stack_ = "String(e.stack) is a " + kindToString(stack, &rt);
+        }
+      } catch (const JSIException& ex) {
+        message_ = std::string("[Exception while creating stack string: ") +
+            ex.what() + "]";
+      }
     }
+  }
 
-    if (what_.empty()) {
-      what_ = message_ + "\n\n" + stack_;
+  if (message_.empty()) {
+    try {
+      if (value_->isString()) {
+        message_ = value_->getString(rt).utf8(rt);
+      } else {
+        Value message = callGlobalFunction(rt, "String", *value_);
+        if (message.isString()) {
+          message_ = message.getString(rt).utf8(rt);
+        } else {
+          message_ = "String(e) is a " + kindToString(message, &rt);
+        }
+      }
+    } catch (const JSIException& ex) {
+      message_ = std::string("[Exception while creating message string: ") +
+          ex.what() + "]";
     }
-  } catch (...) {
-    message_ = "[Exception caught creating message string]";
-    stack_ = "[Exception caught creating stack string]";
-    what_ = "[Exception caught getting value fields]";
+  }
+
+  if (stack_.empty()) {
+    stack_ = "no stack";
+  }
+
+  if (what_.empty()) {
+    what_ = message_ + "\n\n" + stack_;
   }
 }
 

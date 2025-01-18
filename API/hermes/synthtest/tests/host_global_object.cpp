@@ -15,9 +15,6 @@ const char *hostGlobalObjectTrace() {
   return R"###(
 {
   "globalObjID": 1,
-  "env": {
-    "callsToHermesInternalGetInstrumentedStats": [],
-  },
   "trace": [
     {
       "type": "CreatePropNameIDRecord",
@@ -96,7 +93,11 @@ const char *hostGlobalObjectTrace() {
       "objID": 1,
       "propID": "propIDTag:24",
       "propName": "bar",
-      "value": "object:12"
+    },
+    {
+      "type": "ReturnToNativeRecord",
+      "time": 0,
+      "retval": "object:12"
     },
     {
       "type": "CallFromNativeRecord",
@@ -124,7 +125,11 @@ const char *hostGlobalObjectTrace() {
       "objID": 1,
       "propID": "propIDTag:25",
       "propName": "quux",
-      "value": "object:13"
+    },
+    {
+      "type": "ReturnToNativeRecord",
+      "time": 0,
+      "retval": "object:13"
     },
     {
       "type": "CreatePropNameRecord",
@@ -138,7 +143,11 @@ const char *hostGlobalObjectTrace() {
       "objID": 13,
       "propID": "propIDTag:26",
       "propName": "b",
-      "value": "bool:true"
+    },
+    {
+      "type": "ReturnToNativeRecord",
+      "time": 0,
+      "retval": "bool:true"
     },
     {
       "type": "ReturnFromNativeRecord",

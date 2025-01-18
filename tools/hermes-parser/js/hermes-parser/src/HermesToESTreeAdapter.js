@@ -4,18 +4,9 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *
- * @flow
+ * @flow strict
  * @format
  */
-
-/*
-This class does some very "javascripty" things in the name of
-performance which are ultimately impossible to soundly type.
-
-So instead of adding strict types and a large number of suppression
-comments, instead it is left untyped and subclasses are strictly
-typed via a separate flow declaration file.
-*/
 
 import type {HermesNode} from './HermesAST';
 import type {ParserOptions} from './ParserOptions';
@@ -107,12 +98,12 @@ export default class HermesToESTreeAdapter extends HermesASTAdapter {
   }
 
   mapProgram(node: HermesNode): HermesNode {
-    node = this.mapNodeDefault(node);
+    const nodeDefault = this.mapNodeDefault(node);
     node.sourceType = this.getSourceType();
 
-    node.docblock = getModuleDocblock(node);
+    node.docblock = getModuleDocblock(nodeDefault);
 
-    return node;
+    return nodeDefault;
   }
 
   mapSimpleLiteral(node: HermesNode): HermesNode {
@@ -224,7 +215,10 @@ export default class HermesToESTreeAdapter extends HermesASTAdapter {
   mapProperty(nodeUnprocessed: HermesNode): HermesNode {
     const node = this.mapNodeDefault(nodeUnprocessed);
 
-    if (node.value.type === 'FunctionExpression') {
+    if (
+      node.value.type === 'FunctionExpression' &&
+      (node.method || node.kind !== 'init')
+    ) {
       node.value.loc.start = node.key.loc.end;
       node.value.range[0] = node.key.range[1];
     }
@@ -246,6 +240,8 @@ export default class HermesToESTreeAdapter extends HermesASTAdapter {
     const node = this.mapNodeDefault(nodeUnprocessed);
 
     switch (node.type) {
+      // This prop should ideally only live on `ArrowFunctionExpression` but to
+      // match espree output we place it on all functions types.
       case 'FunctionDeclaration':
       case 'FunctionExpression':
         node.expression = false;
@@ -295,7 +291,7 @@ export default class HermesToESTreeAdapter extends HermesASTAdapter {
         i)   unwrap the child (`node.object = child.expression`)
       b) convert this node to a `MemberExpression[optional = true]`
       c) wrap this node (`node = ChainExpression[expression = node]`)
-    3) if the current node is a `MembedExpression`:
+    3) if the current node is a `MemberExpression`:
       a) convert this node to a `MemberExpression[optional = true]`
     */
 

@@ -151,7 +151,7 @@ test('Semantic validation', () => {
     new SyntaxError(
       `'return' not in a function (1:0)
 return 1;
-^~~~~~~~~`,
+^~~~~~`,
     ),
   );
 
@@ -179,7 +179,7 @@ test('Allow return outside function', () => {
     new SyntaxError(
       `'return' not in a function (1:0)
 return 1
-^~~~~~~~`,
+^~~~~~`,
     ),
   );
 
@@ -192,6 +192,70 @@ return 1
           type: 'Literal',
           value: 1,
         },
+      },
+    ],
+  });
+});
+
+test('Allow component syntax', () => {
+  expect(() =>
+    parse('component Foo() {}', {enableExperimentalComponentSyntax: false}),
+  ).toThrow(
+    new SyntaxError(
+      `';' expected (1:10)
+component Foo() {}
+          ^`,
+    ),
+  );
+
+  expect(parse('component Foo() {}')).toMatchObject({
+    type: 'Program',
+    body: [
+      {
+        type: 'ComponentDeclaration',
+        id: {
+          type: 'Identifier',
+          name: 'Foo',
+        },
+      },
+    ],
+  });
+});
+
+test('Allow Flow match syntax', () => {
+  expect(() => parse('const e = match (x) {}')).toThrow(
+    new SyntaxError(
+      `';' expected (1:20)
+const e = match (x) {}
+                    ^`,
+    ),
+  );
+
+  expect(
+    parse('const e = match (x) {}', {enableExperimentalFlowMatchSyntax: true}),
+  ).toMatchObject({
+    type: 'Program',
+    body: [
+      {
+        type: 'VariableDeclaration',
+        declarations: [
+          {
+            type: 'VariableDeclarator',
+            id: {
+              type: 'Identifier',
+              name: 'e',
+            },
+            init: {
+              type: 'MatchExpression',
+              argument: {
+                type: 'Identifier',
+                name: 'x',
+              },
+              cases: [],
+            },
+          },
+        ],
+        kind: 'const',
       },
     ],
   });

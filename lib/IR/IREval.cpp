@@ -172,6 +172,9 @@ Literal *hermes::evalBinaryOperator(
   auto leftNaN = isNaN(lhs);
   auto rightNaN = isNaN(rhs);
 
+  auto leftIsNullOrUndef = leftNull || leftUndef;
+  auto rightIsNullOrUndef = rightNull || rightUndef;
+
   auto &ctx = builder.getModule()->getContext();
 
   using OpKind = BinaryOperatorInst::OpKind;
@@ -213,6 +216,10 @@ Literal *hermes::evalBinaryOperator(
           return builder.getLiteralString(result.str());
         }
 
+        // Cannot mixin BigInt and Number type (NaN)
+        if (leftTy.isBigIntType() || rightTy.isBigIntType())
+          return nullptr;
+
         // None of the operands are strings, so the expression evaluates
         // to NaN
         return builder.getLiteralNaN();
@@ -220,6 +227,9 @@ Literal *hermes::evalBinaryOperator(
       case OpKind::MultiplyKind:
       case OpKind::DivideKind:
       case OpKind::ModuloKind:
+        // Cannot mixin BigInt and Number type (NaN)
+        if (leftTy.isBigIntType() || rightTy.isBigIntType())
+          return nullptr;
         // Binary arithmetic operations involving NaN evaluate to  NaN
         return builder.getLiteralNaN();
       case OpKind::OrKind:
@@ -244,6 +254,11 @@ Literal *hermes::evalBinaryOperator(
       // Identical literals must be equal.
       if (lhs == rhs) {
         return builder.getLiteralBool(true);
+      }
+
+      // `null` and `undefined` are only equal to themselves.
+      if (leftIsNullOrUndef || rightIsNullOrUndef) {
+        return builder.getLiteralBool(leftIsNullOrUndef && rightIsNullOrUndef);
       }
 
       // Handle numeric comparisons:
@@ -271,6 +286,12 @@ Literal *hermes::evalBinaryOperator(
       // Identical operands can't be non-equal.
       if (lhs == rhs) {
         return builder.getLiteralBool(false);
+      }
+
+      // `null` and `undefined` are only equal to themselves.
+      if (leftIsNullOrUndef || rightIsNullOrUndef) {
+        return builder.getLiteralBool(
+            !(leftIsNullOrUndef && rightIsNullOrUndef));
       }
 
       // Handle numeric comparisons:

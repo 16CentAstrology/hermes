@@ -13,6 +13,7 @@
 #include "llvh/Support/MathExtras.h"
 
 #include <cstdlib>
+#include <limits>
 #pragma GCC diagnostic push
 
 #ifdef HERMES_COMPILER_SUPPORTS_WSHORTEN_64_TO_32
@@ -45,6 +46,17 @@ BigIntPrimitive::BigIntPrimitive(uint32_t numDigits) : numDigits(numDigits) {
 CallResult<HermesValue> BigIntPrimitive::fromDouble(
     Runtime &runtime,
     double value) {
+  // If our double is perfectly representing a 32-bit int, we can
+  // just convert directly rather than creating then shrinking an
+  // array.
+  if (value < std::numeric_limits<int32_t>::max() &&
+      value > std::numeric_limits<int32_t>::min()) {
+    int32_t valueAsInt = static_cast<int32_t>(value);
+    if (static_cast<double>(valueAsInt) == value) {
+      return fromSigned(runtime, valueAsInt);
+    }
+  }
+
   const uint32_t numDigits = bigint::fromDoubleResultSize(value);
 
   auto u =
@@ -64,8 +76,9 @@ CallResult<HermesValue> BigIntPrimitive::fromDouble(
 
 CallResult<HermesValue> BigIntPrimitive::toString(
     Runtime &runtime,
-    uint8_t radix) const {
-  std::string result = bigint::toString(this->getImmutableRef(runtime), radix);
+    PseudoHandle<BigIntPrimitive> self,
+    uint8_t radix) {
+  std::string result = bigint::toString(self->getImmutableRef(runtime), radix);
   return StringPrimitive::createEfficient(
       runtime, createASCIIRef(result.c_str()));
 }
@@ -314,6 +327,17 @@ CallResult<HermesValue> BigIntPrimitive::dec(
   const size_t numDigits =
       bigint::subtractSignedResultSize(src->getImmutableRef(runtime), 1);
   return unaryOp(runtime, decAdapter, src, numDigits);
+}
+
+CallResult<double> BigIntPrimitive::toDouble(Runtime &runtime) const {
+  double val;
+  ExecutionStatus res = raiseOnError(
+      runtime, bigint::toDouble(val, this->getImmutableRefUnsafe()));
+  if (LLVM_UNLIKELY(res == ExecutionStatus::EXCEPTION)) {
+    return ExecutionStatus::EXCEPTION;
+  }
+
+  return val;
 }
 
 } // namespace vm

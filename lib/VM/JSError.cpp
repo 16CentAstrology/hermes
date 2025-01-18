@@ -16,6 +16,7 @@
 #include "hermes/VM/PropertyAccessor.h"
 #include "hermes/VM/RuntimeModule-inline.h"
 #include "hermes/VM/StackFrame-inline.h"
+#include "hermes/VM/StringBuilder.h"
 #include "hermes/VM/StringView.h"
 
 #include "llvh/ADT/ScopeExit.h"
@@ -34,7 +35,6 @@ const ObjectVTable JSError::vt{
         CellKind::JSErrorKind,
         cellSize<JSError>(),
         JSError::_finalizeImpl,
-        nullptr,
         JSError::_mallocSizeImpl),
     JSError::_getOwnIndexedRangeImpl,
     JSError::_haveOwnIndexedImpl,
@@ -54,10 +54,14 @@ void JSErrorBuildMeta(const GCCell *cell, Metadata::Builder &mb) {
   mb.addField("domains", &self->domains_);
 }
 
-CallResult<Handle<JSError>> JSError::getErrorFromStackTarget_RJS(
+CallResult<Handle<JSError>> JSError::getErrorFromStackTarget(
     Runtime &runtime,
     Handle<JSObject> targetHandle) {
-  if (targetHandle) {
+  MutableHandle<JSObject> mutHnd =
+      runtime.makeMutableHandle<JSObject>(targetHandle.get());
+  targetHandle = mutHnd;
+
+  while (targetHandle) {
     NamedPropertyDescriptor desc;
     bool exists = JSObject::getOwnNamedDescriptor(
         targetHandle,
@@ -71,6 +75,8 @@ CallResult<Handle<JSError>> JSError::getErrorFromStackTarget_RJS(
     if (vmisa<JSError>(*targetHandle)) {
       return Handle<JSError>::vmcast(targetHandle);
     }
+
+    mutHnd.set(targetHandle->getParent(runtime));
   }
   return runtime.raiseTypeError(
       "Error.stack getter called with an invalid receiver");
@@ -81,8 +87,7 @@ errorStackGetter(void *, Runtime &runtime, NativeArgs args) {
   GCScope gcScope(runtime);
 
   auto targetHandle = args.dyncastThis<JSObject>();
-  auto errorHandleRes =
-      JSError::getErrorFromStackTarget_RJS(runtime, targetHandle);
+  auto errorHandleRes = JSError::getErrorFromStackTarget(runtime, targetHandle);
   if (errorHandleRes == ExecutionStatus::EXCEPTION) {
     return ExecutionStatus::EXCEPTION;
   }
@@ -139,7 +144,7 @@ errorStackGetter(void *, Runtime &runtime, NativeArgs args) {
     }
     stackTraceFormatted = std::move(*prepareRes);
   } else {
-    if (JSError::constructStackTraceString(
+    if (JSError::constructStackTraceString_RJS(
             runtime, errorHandle, targetHandle, stack) ==
         ExecutionStatus::EXCEPTION) {
       return ExecutionStatus::EXCEPTION;
@@ -218,65 +223,84 @@ PseudoHandle<JSError> JSError::create(
   return JSObjectInit::initToPseudoHandle(runtime, cell);
 }
 
-ExecutionStatus JSError::setupStack(
-    Handle<JSObject> selfHandle,
+CallResult<Handle<StringPrimitive>> JSError::toString(
+    Handle<JSObject> O,
     Runtime &runtime) {
-  // Lazily allocate the accessor.
-  if (runtime.jsErrorStackAccessor.isUndefined()) {
-    // This code path allocates quite a few handles, so make sure we
-    // don't disturb the parent GCScope and free them.
-    GCScope gcScope{runtime};
+  // 20.5.3.4 Error.prototype.toString ( )
 
-    auto getter = NativeFunction::create(
-        runtime,
-        Handle<JSObject>::vmcast(&runtime.functionPrototype),
-        nullptr,
-        errorStackGetter,
-        Predefined::getSymbolID(Predefined::emptyString),
-        0,
-        Runtime::makeNullHandle<JSObject>());
+  // 1. and 2. don't apply -- O is already an Object.
 
-    auto setter = NativeFunction::create(
-        runtime,
-        Handle<JSObject>::vmcast(&runtime.functionPrototype),
-        nullptr,
-        errorStackSetter,
-        Predefined::getSymbolID(Predefined::emptyString),
-        1,
-        Runtime::makeNullHandle<JSObject>());
+  // 3. Let name be ? Get(O, "name").
+  auto propRes = JSObject::getNamed_RJS(
+      O, runtime, Predefined::getSymbolID(Predefined::name), PropOpFlags());
+  if (LLVM_UNLIKELY(propRes == ExecutionStatus::EXCEPTION)) {
+    return ExecutionStatus::EXCEPTION;
+  }
+  Handle<> name = runtime.makeHandle(std::move(*propRes));
 
-    auto crtRes = PropertyAccessor::create(runtime, getter, setter);
-    if (crtRes == ExecutionStatus::EXCEPTION) {
+  // 4. If name is undefined, set name to "Error"; otherwise set name to ?
+  // ToString(name).
+  MutableHandle<StringPrimitive> nameStr{runtime};
+  if (name->isUndefined()) {
+    nameStr = runtime.getPredefinedString(Predefined::Error);
+  } else {
+    auto strRes = toString_RJS(runtime, name);
+    if (LLVM_UNLIKELY(strRes == ExecutionStatus::EXCEPTION)) {
       return ExecutionStatus::EXCEPTION;
     }
-
-    runtime.jsErrorStackAccessor = *crtRes;
+    nameStr = strRes->get();
   }
 
-  auto accessor =
-      Handle<PropertyAccessor>::vmcast(&runtime.jsErrorStackAccessor);
+  // 5. Let msg be ? Get(O, "message").
+  if (LLVM_UNLIKELY(
+          (propRes = JSObject::getNamed_RJS(
+               O,
+               runtime,
+               Predefined::getSymbolID(Predefined::message),
+               PropOpFlags())) == ExecutionStatus::EXCEPTION)) {
+    return ExecutionStatus::EXCEPTION;
+  }
+  Handle<> msg = runtime.makeHandle(std::move(*propRes));
 
-  DefinePropertyFlags dpf{};
-  dpf.setEnumerable = 1;
-  dpf.setConfigurable = 1;
-  dpf.setGetter = 1;
-  dpf.setSetter = 1;
-  dpf.enumerable = 0;
-  dpf.configurable = 1;
-
-  auto res = JSObject::defineOwnProperty(
-      selfHandle,
-      runtime,
-      Predefined::getSymbolID(Predefined::stack),
-      dpf,
-      accessor);
-
-  // Ignore failures to set the "stack" property as other engines do.
-  if (LLVM_UNLIKELY(res == ExecutionStatus::EXCEPTION)) {
-    runtime.clearThrownValue();
+  // 6. If msg is undefined, set msg to the empty String;
+  //    otherwise set msg to ? ToString(msg).
+  MutableHandle<StringPrimitive> msgStr{runtime};
+  if (msg->isUndefined()) {
+    // If msg is undefined, then let msg be the empty String.
+    msgStr = runtime.getPredefinedString(Predefined::emptyString);
+  } else {
+    auto strRes = toString_RJS(runtime, msg);
+    if (LLVM_UNLIKELY(strRes == ExecutionStatus::EXCEPTION)) {
+      return ExecutionStatus::EXCEPTION;
+    }
+    msgStr = strRes->get();
   }
 
-  return ExecutionStatus::RETURNED;
+  // 7. If name is the empty String, return msg.
+  if (nameStr->getStringLength() == 0) {
+    return msgStr;
+  }
+
+  // 8. If msg is the empty String, return name.
+  if (msgStr->getStringLength() == 0) {
+    return nameStr;
+  }
+
+  // 9. Return the string-concatenation of name, the code unit 0x003A (COLON),
+  // the code unit 0x0020 (SPACE), and msg.
+  SafeUInt32 length{nameStr->getStringLength()};
+  length.add(2);
+  length.add(msgStr->getStringLength());
+  CallResult<StringBuilder> builderRes =
+      StringBuilder::createStringBuilder(runtime, length);
+  if (LLVM_UNLIKELY(builderRes == ExecutionStatus::EXCEPTION)) {
+    return ExecutionStatus::EXCEPTION;
+  }
+  auto builder = std::move(*builderRes);
+  builder.appendStringPrim(nameStr);
+  builder.appendASCIIRef({": ", 2});
+  builder.appendStringPrim(msgStr);
+  return builder.getStringPrimitive();
 }
 
 ExecutionStatus JSError::setMessage(
@@ -536,27 +560,62 @@ bool JSError::appendFunctionNameAtIndex(
   return true;
 }
 
-ExecutionStatus JSError::constructStackTraceString(
+ExecutionStatus JSError::constructStackTraceString_RJS(
     Runtime &runtime,
     Handle<JSError> selfHandle,
     Handle<JSObject> targetHandle,
     SmallU16String<32> &stack) {
+  // This method potentially runs javascript, so we need to protect it agains
+  // stack overflow.
+  ScopedNativeDepthTracker depthTracker(runtime);
+  if (LLVM_UNLIKELY(depthTracker.overflowed())) {
+    return runtime.raiseStackOverflow(Runtime::StackOverflowKind::NativeStack);
+  }
+
   GCScope gcScope(runtime);
-  // First of all, the stacktrace string starts with target.toString.
-  auto res = toString_RJS(runtime, targetHandle);
+  // First of all, the stacktrace string starts with
+  // %Error.prototype.toString%(target).
+  CallResult<Handle<StringPrimitive>> res =
+      JSError::toString(targetHandle, runtime);
+  // Keep track whether targetHandle.toString() threw. If it did, the error
+  // message will contain a string letting the user know that something went
+  // awry.
+  const bool targetHandleToStringThrew = res == ExecutionStatus::EXCEPTION;
+
   if (LLVM_UNLIKELY(res == ExecutionStatus::EXCEPTION)) {
+    // target.toString() threw an exception; if it is a catchable error try to
+    // toString() it so the user has some indication of what went wrong.
+    if (!isUncatchableError(runtime.getThrownValue())) {
+      HermesValue thrownValue = runtime.getThrownValue();
+      if (thrownValue.isObject()) {
+        // Clear the pending exception, and try to convert thrownValue to string
+        // with %Error.prototype.toString%(thrownValue).
+        runtime.clearThrownValue();
+        res = JSError::toString(
+            runtime.makeHandle<JSObject>(thrownValue), runtime);
+      }
+    }
+  }
+
+  if (LLVM_UNLIKELY(res == ExecutionStatus::EXCEPTION)) {
+    // An exception happened while trying to get the description for the error.
     if (isUncatchableError(runtime.getThrownValue())) {
-      // If toString throws an uncatchable exception, propagate it up.
+      // If JSError::toString throws an uncatchable exception, bubble it up.
       return ExecutionStatus::EXCEPTION;
     }
-    // If toString throws an exception, we just use <error>.
-    stack.append(u"<error>");
-    // There is not much we can do if exception thrown when trying to
-    // get the stacktrace. We just name it <error>, and it should be
-    // sufficient to tell what happened here.
+    // Clear the pending exception so the caller doesn't observe this side
+    // effect.
     runtime.clearThrownValue();
+    // Append a generic <error> string and move on.
+    stack.append(u"<error>");
   } else {
+    if (targetHandleToStringThrew) {
+      stack.append(u"<while converting error to string: ");
+    }
     res->get()->appendUTF16String(stack);
+    if (targetHandleToStringThrew) {
+      stack.append(u">");
+    }
   }
 
   // Virtual offsets are computed by walking the list of bytecode functions. If
@@ -739,6 +798,8 @@ static const CodeBlock *getLeafCodeBlock(
     }
     if (auto *asBoundFunction = dyn_vmcast<const BoundFunction>(callable)) {
       callable = asBoundFunction->getTarget(runtime);
+    } else {
+      break;
     }
   }
 
@@ -751,13 +812,13 @@ void JSError::popFramesUntilInclusive(
     Handle<Callable> callableHandle) {
   assert(
       selfHandle->stacktrace_ && "Cannot pop frames when stacktrace_ is null");
+  // By default, assume we won't encounter the sentinel function and skip the
+  // entire stack.
+  selfHandle->firstExposedFrameIndex_ = selfHandle->stacktrace_->size();
   auto codeBlock = getLeafCodeBlock(callableHandle, runtime);
   if (!codeBlock) {
     return;
   }
-  // By default, assume we won't encounter the sentinel function and skip the
-  // entire stack.
-  selfHandle->firstExposedFrameIndex_ = selfHandle->stacktrace_->size();
   for (size_t index = 0, max = selfHandle->stacktrace_->size(); index < max;
        index++) {
     const StackTraceInfo &sti = selfHandle->stacktrace_->at(index);

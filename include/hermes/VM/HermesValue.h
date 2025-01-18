@@ -323,23 +323,23 @@ class HermesValue {
   }
 #endif
 
-  inline static HermesValue encodeDoubleValue(double num) {
-    HermesValue RV(llvh::DoubleToBits(num));
-    assert(RV.isDouble());
-    return RV;
-  }
-
-  /// Encode a double value, which it cannot be guaranteed that the NaN bits are
-  /// all zeroes.
-  inline static HermesValue encodeUntrustedDoubleValue(double num) {
-    return std::isnan(num) ? encodeNaNValue() : encodeDoubleValue(num);
-  }
-
   /// Encode a numeric value into the best possible representation based on the
   /// static type of the parameter. Right now we only have one representation
   /// (double), but that could change in the future.
-  inline static HermesValue encodeNumberValue(double num) {
-    return encodeDoubleValue(num);
+  inline static HermesValue encodeUntrustedNumberValue(double num) {
+    if (LLVM_UNLIKELY(std::isnan(num))) {
+      return encodeNaNValue();
+    }
+    return HermesValue(llvh::DoubleToBits(num));
+  }
+
+  /// Encodes \p num as a hermes value without checking for NaNs.
+  /// Should only be used in for values coming from locations within the VM,
+  /// where we know any NaN will be the quiet NaN.
+  inline static HermesValue encodeTrustedNumberValue(double num) {
+    HermesValue RV(llvh::DoubleToBits(num));
+    assert(RV.isDouble() && "value not representable as double");
+    return RV;
   }
 
   /// Encode a numeric value into the best possible representation based on the
@@ -348,9 +348,19 @@ class HermesValue {
   template <typename T>
   inline static
       typename std::enable_if<std::is_integral<T>::value, HermesValue>::type
-      encodeNumberValue(T num) {
+      encodeUntrustedNumberValue(T num) {
+    return encodeTrustedNumberValue((double)num);
+  }
+
+  /// Encodes \p num as a hermes value without safety checkings.
+  /// Should only be used in for values not coming (directly or indirectly) from
+  /// user code.
+  template <typename T>
+  inline static
+      typename std::enable_if<std::is_integral<T>::value, HermesValue>::type
+      encodeTrustedNumberValue(T num) {
     assert((double)num == num && "value not representable as double");
-    return encodeDoubleValue((double)num);
+    return encodeTrustedNumberValue((double)num);
   }
 
   static HermesValue encodeNaNValue() {
@@ -411,6 +421,13 @@ class HermesValue {
   }
   inline bool isNumber() const {
     return isDouble();
+  }
+  inline bool isNaN() const {
+    // Mask out the sign bit since it does not affect whether the value is a
+    // NaN. All the other bits must be equal to the NaN bit pattern, since we
+    // only use the quiet NaN to represent NaN.
+    uint64_t kMask = llvh::maskLeadingZeros<uint64_t>(1);
+    return (this->raw_ & kMask) == (encodeNaNValue().raw_ & kMask);
   }
 
   inline RawType getRaw() const {
@@ -693,22 +710,6 @@ struct GCHermesValueUtil {
 };
 
 llvh::raw_ostream &operator<<(llvh::raw_ostream &OS, HermesValue hv);
-
-/// SafeNumericEncoder can encode any numeric type into a numeric HermesValue,
-/// as well as safely encoding any possible untrusted floating-point values.
-template <typename T, bool b = std::is_floating_point<T>::value>
-struct SafeNumericEncoder {
-  static HermesValue encode(T val) {
-    return HermesValue::encodeNumberValue(val);
-  }
-};
-
-template <typename T>
-struct SafeNumericEncoder<T, true> {
-  static HermesValue encode(T val) {
-    return HermesValue::encodeUntrustedDoubleValue(val);
-  }
-};
 
 } // end namespace vm
 } // end namespace hermes

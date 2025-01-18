@@ -15,24 +15,33 @@
 import Fuzzilli
 
 struct Profile {
-    let processArguments: [String]
+    let processArgs: (_ randomize: Bool) -> [String]
     let processEnv: [String : String]
+    let maxExecsBeforeRespawn: Int
+    // Timeout is in milliseconds.
+    let timeout: Int
     let codePrefix: String
     let codeSuffix: String
     let ecmaVersion: ECMAScriptVersion
 
-    // JavaScript code snippets that cause a crash in the target engine.
-    // Used to verify that crashes can be detected.
-    let crashTests: [String]
+    // JavaScript code snippets that are executed at startup time to ensure that Fuzzilli and the target engine are configured correctly.
+    let startupTests: [(String, ExpectedStartupTestResult)]
 
-    let additionalCodeGenerators: WeightedList<CodeGenerator>
+    let additionalCodeGenerators: [(CodeGenerator, Int)]
     let additionalProgramTemplates: WeightedList<ProgramTemplate>
 
     let disabledCodeGenerators: [String]
+    let disabledMutators: [String]
 
-    let additionalBuiltins: [String: Type]
+    let additionalBuiltins: [String: ILType]
+    let additionalObjectGroups: [ObjectGroup]
+
+    // An optional post-processor that is executed for every sample generated for fuzzing and can modify it.
+    let optionalPostProcessor: FuzzingPostProcessor?
 }
 
 let profiles = [
     "hermes": hermesProfile,
+    "spark": sparkARProfile,
+    "w2c": w2cProfile,
 ]

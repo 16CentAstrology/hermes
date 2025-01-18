@@ -40,11 +40,22 @@ inline static bool isUTF8ContinuationByte(char ch) {
   return (ch & 0xC0) == 0x80;
 }
 
+/// \return true if this is a valid ASCII character.
+/// As in the range of 0-127.
+template <typename Char>
+bool isASCII(Char c) {
+  // We start with a mask representing all valid set bits of ASCII. Flip the
+  // mask, so it now represents all invalid bits. Test if any bit is set that
+  // would make it an invalid ASCII character.
+  constexpr uint32_t asciiMask = 0x7f;
+  return (c & static_cast<Char>(~asciiMask)) == 0;
+}
+
 /// \return true if this is a pure ASCII char sequence.
 template <typename Iter>
 inline bool isAllASCII(Iter begin, Iter end) {
   while (begin < end) {
-    if (*begin < 0 || *begin > 127)
+    if (!isASCII(*begin))
       return false;
     ++begin;
   }
@@ -233,6 +244,16 @@ bool convertUTF16ToUTF8WithReplacements(
     std::string &dest,
     llvh::ArrayRef<char16_t> input,
     size_t maxCharacters = 0);
+
+/// Convert a UTF-16 encoded string \p input to a pre-allocated UTF-8 buffer
+/// \p outBuffer of length \p outBufferLength, replacing unpaired surrogates
+/// halves with the Unicode replacement character.
+/// \return a std::pair with the first element being the number of UTF-16
+///   characters converted, and the second element being the number of UTF-8
+///   characters written
+std::pair<uint32_t, uint32_t> convertUTF16ToUTF8BufferWithReplacements(
+    llvh::MutableArrayRef<uint8_t> outBuffer,
+    llvh::ArrayRef<char16_t> input);
 
 /// Convert a UTF-8 encoded string (with surrogates) \p input to a UTF-8 one
 /// (without surrogates), storing the conversion in \p output. Output characters

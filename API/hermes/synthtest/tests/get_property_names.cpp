@@ -15,9 +15,6 @@ const char *getPropertyNamesTrace() {
   return R"###(
 {
   "globalObjID": 1,
-  "env": {
-    "callsToHermesInternalGetInstrumentedStats": [],
-  },
   "trace": [
     {
       "type": "CreatePropNameIDRecord",
@@ -61,7 +58,11 @@ const char *getPropertyNamesTrace() {
       "type": "GetPropertyNamesRecord",
       "time": 0,
       "objID": 11,
-      "propNamesID": 12
+    },
+    {
+      "type": "ReturnToNativeRecord",
+      "time": 0,
+      "retval": "object:12"
     },
     {
       "type": "ReturnFromNativeRecord",

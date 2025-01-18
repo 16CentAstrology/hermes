@@ -31,7 +31,7 @@ WARNING: The old `fastcomp` backend was [removed in emscripten `2.0.0` (August 2
 
 ## Setting up Workspace and Host Hermesc
 
-Hermes now requires a two stage build proecess because the VM now contains
+Hermes now requires a two stage build process because the VM now contains
 Hermes bytecode which needs to be compiled by Hermes.
 
 Please follow the [Cross Compilation](./CrossCompilation.md) to set up a workplace
@@ -41,7 +41,7 @@ and build a host hermesc at `$HERMES_WS_DIR/build_host_hermesc`.
 # Building Hermes With Emscripten and CMake
 
     cmake -S ${HermesSourcePath?} -B build \
-          -DCMAKE_TOOLCHAIN_FILE=${EmscriptenRoot?}/emscripten/cmake/Modules/Platform/Emscripten.cmake \
+          -DCMAKE_TOOLCHAIN_FILE=${EmscriptenRoot?}/cmake/Modules/Platform/Emscripten.cmake \
           -DCMAKE_BUILD_TYPE=MinSizeRel \
           -DEMSCRIPTEN_FASTCOMP=1 \
           -DCMAKE_EXE_LINKER_FLAGS="-s NODERAWFS=1 -s WASM=0 -s ALLOW_MEMORY_GROWTH=1"

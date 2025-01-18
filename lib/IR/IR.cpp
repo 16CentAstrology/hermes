@@ -102,7 +102,7 @@ void Value::removeUse(Use U) {
   // If we've changed the location of a use in the use list then we need to
   // update the operand in the user.
   if (U.second != Users.size()) {
-    Use oldUse = {this, Users.size()};
+    Use oldUse = {this, static_cast<unsigned>(Users.size())};
     auto &operands = Users[U.second]->Operands;
     for (int i = 0, e = operands.size(); i < e; i++) {
       if (operands[i] == oldUse) {
@@ -116,7 +116,7 @@ void Value::removeUse(Use U) {
 
 Value::Use Value::addUser(Instruction *Inst) {
   Users.push_back(Inst);
-  return {this, Users.size() - 1};
+  return {this, static_cast<unsigned>(Users.size() - 1)};
 }
 
 void Value::replaceAllUsesWith(Value *Other) {
@@ -445,10 +445,10 @@ WordBitSet<> Instruction::getChangedOperands() {
   }
 }
 
-Parameter::Parameter(Function *parent, Identifier name)
+Parameter::Parameter(Function *parent, Identifier name, bool isThisParameter)
     : Value(ValueKind::ParameterKind), Parent(parent), Name(name) {
   assert(Parent && "Invalid parent");
-  if (name.str() == "this") {
+  if (isThisParameter) {
     Parent->setThisParameter(this);
   } else {
     Parent->addParameter(this);
@@ -460,7 +460,11 @@ Variable::Variable(
     ScopeDesc *scope,
     DeclKind declKind,
     Identifier txt)
-    : Value(k), declKind(declKind), text(txt), parent(scope) {
+    : Value(k),
+      declKind(declKind),
+      text(txt),
+      parent(scope),
+      strictImmutableBinding_(declKind == DeclKind::Const) {
   scope->addVariable(this);
 }
 
@@ -474,6 +478,13 @@ int Variable::getIndexInVariableList() const {
     index++;
   }
   llvm_unreachable("Cannot find variable in the variable list");
+}
+
+Variable *Variable::cloneIntoNewScope(ScopeDesc *newScope) {
+  Variable *clone = new Variable(parent, declKind, text);
+  clone->strictImmutableBinding_ = strictImmutableBinding_;
+  newScope->addVariable(clone);
+  return clone;
 }
 
 Identifier Parameter::getName() const {

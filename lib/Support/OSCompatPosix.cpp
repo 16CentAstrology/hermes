@@ -25,15 +25,12 @@
 #endif
 #endif // __linux__
 
+#include <pthread.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #ifdef __MACH__
 #include <mach/mach.h>
-
-#ifdef __APPLE__
-#include <pthread.h>
-#endif // __APPLE__
 
 #endif // __MACH__
 
@@ -66,6 +63,11 @@
 #endif
 #endif // __ANDROID__
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
+#include "llvh/Config/config.h"
 #include "llvh/Support/raw_ostream.h"
 
 namespace hermes {
@@ -190,6 +192,9 @@ llvh::ErrorOr<void *>
 vm_allocate_aligned(size_t sz, size_t alignment, void *hint) {
   assert(sz > 0 && sz % page_size() == 0);
   assert(alignment > 0 && alignment % page_size() == 0);
+  // While not specifically required for the posix implementation, check the
+  // alignment requirement here to avoid creating bugs on other platforms.
+  assert(llvh::isPowerOf2_64(alignment));
 
   // Opportunistically allocate without alignment constraint,
   // and see if the memory happens to be aligned.
@@ -580,10 +585,10 @@ uint64_t process_id() {
   return getpid();
 }
 
-// Platform-specific implementations of thread_id
+// Platform-specific implementations of global_thread_id
 #if defined(__APPLE__) && defined(__MACH__)
 
-uint64_t thread_id() {
+uint64_t global_thread_id() {
   uint64_t tid = 0;
   auto ret = pthread_threadid_np(nullptr, &tid);
   assert(ret == 0 && "pthread_threadid_np shouldn't fail for current thread");
@@ -593,19 +598,80 @@ uint64_t thread_id() {
 
 #elif defined(__ANDROID__)
 
-uint64_t thread_id() {
+uint64_t global_thread_id() {
   return gettid();
 }
 
 #elif defined(__linux__)
 
-uint64_t thread_id() {
+uint64_t global_thread_id() {
   return syscall(__NR_gettid);
 }
 
 #else
 #error "Thread ID not supported on this platform"
 #endif
+
+namespace detail {
+
+#if defined(__APPLE__) && defined(__MACH__)
+
+std::pair<const void *, size_t> thread_stack_bounds_impl() {
+  pthread_t tid = pthread_self();
+  void *origin = pthread_get_stackaddr_np(tid);
+  rlim_t size = 0;
+  if (pthread_main_np()) {
+    // According to
+    // https://opensource.apple.com/source/WTFEmbedded/WTFEmbedded-95.23/wtf/StackBounds.cpp.auto.html
+    // pthread_get_size lies to us when we're the main thread, use get_rlimit
+    // instead
+    struct rlimit limit;
+    getrlimit(RLIMIT_STACK, &limit);
+    size = limit.rlim_cur;
+  } else {
+    size = pthread_get_stacksize_np(tid);
+  }
+
+  return {origin, size};
+}
+
+#else
+
+std::pair<const void *, size_t> thread_stack_bounds_impl() {
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_getattr_np(pthread_self(), &attr);
+
+  void *origin;
+  size_t size;
+  if (pthread_attr_getstack(&attr, &origin, &size))
+    hermes_fatal("Unable to obtain native stack bounds");
+
+#ifdef __BIONIC__
+  // It appears that on Android/Bionic, the range returned by
+  // pthread_attr_getstack() includes the stack guard pages. We must remove them
+  // from the bounds.
+  size_t guardSize;
+  if (pthread_attr_getguardsize(&attr, &guardSize)) {
+    // Don't give up in case of error.
+    guardSize = 0;
+  }
+  if (guardSize > size)
+    guardSize = size;
+  // Exclude the guard pages from the available stack.
+  origin = (char *)origin + guardSize;
+  size -= guardSize;
+#endif
+
+  pthread_attr_destroy(&attr);
+
+  // origin is now the lowest addressable byte.
+  return {(char *)origin + size, size};
+}
+
+#endif
+
+} // namespace detail
 
 void set_thread_name(const char *name) {
   // Set the thread name for TSAN. It doesn't share the same name mapping as the
@@ -778,10 +844,12 @@ bool unset_env(const char *name) {
 void *SigAltStackLeakSuppressor::stackRoot_{nullptr};
 
 SigAltStackLeakSuppressor::~SigAltStackLeakSuppressor() {
+#ifdef HAVE_SIGALTSTACK
   stack_t oldAltStack;
   if (sigaltstack(nullptr, &oldAltStack) == 0) {
     stackRoot_ = oldAltStack.ss_sp;
   }
+#endif
 }
 
 } // namespace oscompat

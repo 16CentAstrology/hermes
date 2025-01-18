@@ -51,6 +51,11 @@ class CodeBlock final
   /// ID of this function in the module's function list.
   uint32_t functionID_;
 
+#ifdef HERMES_ENABLE_DEBUGGER
+  /// The number of breakpoints currently installed in this function.
+  uint32_t numInstalledBreakpoints_ = 0;
+#endif
+
   /// Total size of the property cache.
   const uint32_t propertyCacheSize_;
 
@@ -210,7 +215,7 @@ class CodeBlock final
   /// with the current function if an entry is found, or llvh::None if not.
   OptValue<uint32_t> getFunctionSourceID() const;
 
-  OptValue<uint32_t> getDebugLexicalDataOffset() const;
+  OptValue<uint32_t> getScopeDescDataOffset() const;
 
   OptValue<uint32_t> getTextifiedCalleeOffset() const;
 
@@ -290,13 +295,6 @@ class CodeBlock final
   }
 
 #ifdef HERMES_ENABLE_DEBUGGER
-  inst::OpCode getOpCode(uint32_t offset) const {
-    auto opcodes = getOpcodeArray();
-    assert(offset < opcodes.size() && "opCode offset out of bounds");
-    const auto *inst = reinterpret_cast<const inst::Inst *>(&opcodes[offset]);
-    return inst->opCode;
-  }
-
   /// Installs in the debugger instruction into the opcode stream
   /// at location \p offset.
   /// Requires that there's a breakpoint registered at \p offset.
@@ -310,8 +308,10 @@ class CodeBlock final
   /// Decrements the user count of the associated runtime module.
   void uninstallBreakpointAtOffset(uint32_t offset, uint8_t opCode);
 
-  /// \return the offset of the next instruction after the one at \p offset.
-  uint32_t getNextOffset(uint32_t offset) const;
+  /// \return the number of breakpoints installed in this code block.
+  uint32_t getNumInstalledBreakpoints() const {
+    return numInstalledBreakpoints_;
+  }
 #endif
 };
 

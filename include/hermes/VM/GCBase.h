@@ -8,6 +8,7 @@
 #ifndef HERMES_VM_GCBASE_H
 #define HERMES_VM_GCBASE_H
 
+#include "hermes/ADT/ManagedChunkedList.h"
 #include "hermes/Inst/Inst.h"
 #include "hermes/Platform/Logging.h"
 #include "hermes/Public/CrashManager.h"
@@ -51,28 +52,25 @@
 #include <vector>
 #pragma GCC diagnostic push
 
-#ifdef HERMES_COMPILER_SUPPORTS_WSHORTEN_64_TO_32
-#pragma GCC diagnostic ignored "-Wshorten-64-to-32"
-#endif
 namespace hermes {
 namespace vm {
 
 /// Forward declarations;
-namespace detail {
-struct WeakRefKey;
-}
-template <CellKind C>
-class JSWeakMapImpl;
-using JSWeakMap = JSWeakMapImpl<CellKind::JSWeakMapKind>;
-
 class GCCell;
+class JSObject;
+class JSWeakMapImplBase;
 
 #ifdef HERMESVM_GC_RUNTIME
 #define RUNTIME_GC_KINDS GC_KIND(HadesGC)
 #endif
 
 /// Used by XorPtr to separate encryption keys between uses.
-enum XorPtrKeyID { ArrayBufferData, JSFunctionCodeBlock, _NumKeys };
+enum XorPtrKeyID {
+  ArrayBufferData,
+  JSFunctionCodeBlock,
+  DummyObjectFinalizerCallback,
+  _NumKeys
+};
 
 // A specific GC class extend GCBase, and override its virtual functions.
 // In addition, it must implement the following methods:
@@ -173,9 +171,12 @@ enum XorPtrKeyID { ArrayBufferData, JSFunctionCodeBlock, _NumKeys };
 ///         const GCCell *value);
 ///
 ///   A weak ref is about to be read. Executes a read barrier so the GC can
-///   take action such as extending the lifetime of the reference. The
-///   HermesValue version does nothing if the value isn't a pointer.
+///   take action such as extending the lifetime of the reference.
 ///     void weakRefReadBarrier(GCCell *value);
+///   A mapped value in WeakMap/WeakSet is about to be read. Executes a read
+///   barrier so the GC can take action such as extending the lifetime of the
+///   mapped value.
+///     void weakRefReadBarrier(HermesValue value);
 ///
 ///   We copied HermesValues into the given region.  Note that \p numHVs is
 ///   the number of HermesValues in the the range, not the char length.
@@ -591,6 +592,7 @@ class GCBase {
       Null,
       True,
       False,
+      Number,
       FirstNonReservedID,
     };
 
@@ -621,7 +623,19 @@ class GCBase {
         return llvh::BitsToDouble(HermesValue::encodeNullValue().getRaw());
       }
       static unsigned getHashValue(double val) {
-        return std::hash<uint64_t>{}(llvh::DoubleToBits(val));
+        uint64_t bits = llvh::DoubleToBits(val);
+        // Representation of small floating values may have many lower bits as
+        // 0's. Hash functions that generate 64bits hashes identical to the
+        // input integer values (e.g., std::hash) may cause a lot of collisions,
+        // since the hash values are truncated to 32bits. The LLVM hash_value
+        // function has the nice property that each input bit affects each
+        // output bit with close probability, so the hash value after truncating
+        // is still good. On a random number set of uniform distribution (with
+        // 1/16 being random doubles and the rest integers) in the range of
+        // [-1000000, 1000000], with size 80M, this performs pretty well. In
+        // practice, most numbers in the heap would be small integers, so use
+        // this for now until we see other extreme cases.
+        return llvh::hash_value(bits);
       }
       static bool isEqual(double LHS, double RHS) {
         return llvh::DoubleToBits(LHS) == llvh::DoubleToBits(RHS);
@@ -630,8 +644,17 @@ class GCBase {
 
     explicit IDTracker();
 
-    /// Return true if IDs are being tracked.
-    bool isTrackingIDs();
+    /// Return true if Object IDs have been tracked.
+    bool hasTrackedObjectIDs();
+
+    /// Return true if Number IDs are being tracked.
+    bool isTrackingNumberIDs();
+
+    /// Start assigning unique IDs to numbers passed to \p getNumberID
+    void startTrackingNumberIDs();
+
+    /// Stop assigning unique IDs to numbers passed to \p getNumberID
+    void stopTrackingNumberIDs();
 
     /// Get the unique object id of the given object.
     /// If one does not yet exist, start tracking it.
@@ -661,8 +684,11 @@ class GCBase {
     llvh::SmallVector<HeapSnapshot::NodeID, 1> &getExtraNativeIDs(
         HeapSnapshot::NodeID node);
 
-    /// Assign a unique ID to a literal number value that occurs in the heap.
-    /// Can be used to make fake nodes that will display their numeric value.
+    /// If \p isTrackingNumberIDs_ is true, then assign a unique ID to a literal
+    /// number value that occurs in the heap. Can be used to make fake nodes
+    /// that will display their numeric value. Otherwise if \p
+    /// isTrackingNumberIDs_ is false, then simply returns the reserved ID
+    /// representing Number.
     HeapSnapshot::NodeID getNumberID(double num);
 
     /// Get the object pointer for the given ID. This is the inverse of \c
@@ -761,6 +787,9 @@ class GCBase {
     /// Map of numeric values to IDs. Used to give numbers in the heap a unique
     /// node.
     llvh::DenseMap<double, HeapSnapshot::NodeID, DoubleComparator> numberIDMap_;
+
+    /// Whether to assign an unique ID to the number given to \p getNumberID
+    bool isTrackingNumberIDs_ = true;
   };
 
   enum class HeapKind { HadesGC, MallocGC };
@@ -772,7 +801,12 @@ class GCBase {
       std::shared_ptr<CrashManager> crashMgr,
       HeapKind kind);
 
-  virtual ~GCBase() {}
+  virtual ~GCBase() {
+    assert(
+        weakMapEntrySlots_.sizeForTests() == 0 &&
+        "weakMapEntrySlots_ must all be freed");
+    assert(weakSlots_.sizeForTests() == 0 && "weakSlots_ must all be freed");
+  }
 
   /// Create a fixed size object of type T.
   /// \return a pointer to the newly created object in the GC heap.
@@ -932,6 +966,15 @@ class GCBase {
 
   WeakRefSlot *allocWeakSlot(CompressedPointer ptr);
 
+  /// Allocate a slot to use in WeakMap/WeakSet when inserting a new entry.
+  /// \param key Pointer to the key object.
+  /// \param value The mapped value by the key \p key.
+  /// \param owner Pointer to the owning WeakMap/WeakSet.
+  WeakMapEntrySlot *allocWeakMapEntrySlot(
+      JSObject *key,
+      HermesValue value,
+      JSWeakMapImplBase *owner);
+
 #ifndef NDEBUG
   /// \name Debug APIs
   /// \{
@@ -956,10 +999,26 @@ class GCBase {
   /// \return An error code on failure, else an empty error code.
   std::error_code createSnapshotToFile(const std::string &fileName);
 
+  /// An edges counter array for each root section. The counter is uninitialized
+  /// if a root section is not visited yet.
+  using SavedNumRootEdges = std::array<
+      llvh::Optional<HeapSizeType>,
+      static_cast<unsigned>(RootSectionAcceptor::Section::NumSections)>;
+
   /// Creates a snapshot of the heap, which includes information about what
   /// objects exist, their sizes, and what they point to.
-  virtual void createSnapshot(llvh::raw_ostream &os) = 0;
-  void createSnapshot(GC &gc, llvh::raw_ostream &os);
+  virtual void createSnapshot(
+      llvh::raw_ostream &os,
+      bool captureNumericValue) = 0;
+  void createSnapshot(GC &gc, llvh::raw_ostream &os, bool captureNumericValue);
+  /// Actual implementation of writing the snapshot. If \p numRootEdges is
+  /// uninitialized, it will be populated with the edge counts for each root
+  /// section. Otherwise, it will be used to pad the output with additional
+  /// edges if necessary so they match the recorded count.
+  void createSnapshotImpl(
+      GC &gc,
+      HeapSnapshot &snap,
+      SavedNumRootEdges &numRootEdges);
 
   /// Subclasses can override and add more specific native memory usage.
   virtual void snapshotAddGCNativeNodes(HeapSnapshot &snap);
@@ -1028,6 +1087,7 @@ class GCBase {
   void snapshotWriteBarrierRange(
       const GCSmallHermesValue *start,
       uint32_t numHVs);
+  void weakRefReadBarrier(HermesValue value);
   void weakRefReadBarrier(GCCell *value);
 #endif
 
@@ -1067,119 +1127,6 @@ class GCBase {
       SlotVisitorWithNames<Acceptor> &visitor,
       GCCell *cell);
 
-  /// Utilities for WeakMap marking.
-
-  /// \return a list of pointers to all the WeakRefKeys in \p weakMap.
-  /// The \p gc argument is passed to methods that verify they're only
-  /// called during GC.
-  static std::vector<detail::WeakRefKey *> buildKeyList(
-      GC &gc,
-      JSWeakMap *weakMap);
-
-  /// For all non-null keys in \p weakMap that are unreachable, clear
-  /// the key (clear the pointer in the WeakRefSlot) and value (set it
-  /// to undefined).
-  template <typename KeyReachableFunc>
-  static void clearEntriesWithUnreachableKeys(
-      GC &gc,
-      JSWeakMap *weakMap,
-      KeyReachableFunc keyReachable);
-
-  /// For all reachable keys in \p weakMap, mark from the
-  /// corresponding value using the given \p acceptor, reaching a
-  /// transitive closure.  The acceptor is required to have a property
-  /// we don't normally require: it must be idempotent.  I.e., it must
-  /// function properly when applied multiple times to the same
-  /// pointer slot during a collection.  "Mark-in-place" acceptors
-  /// will generally have this property.  Uses \p objIsMarked to
-  /// determine whether an object is marked, and, for entries whose
-  /// keys are marked, invokes \p markFromVal on the corresponding value.
-  /// These have the following specs:
-  ///
-  ///  * objIsMarked: (GCCell*) ==> bool
-  ///    Returns whether a GCCell is marked.
-  ///
-  ///  * markFromVal: GCCell *cell, GCHermesValue &cellRef) ==> bool
-  ///    If the argument is unmarked, mark it, schedule for scanning.
-  ///    Returns whether the object was newly marked.
-  ///
-  /// If the \p unreachableKeys map has an entry for \p weakMap, assumes the
-  /// list of WeakRefKeys contains all possibly-unreachable keys; any
-  /// other keys are assumed to have already been found reachable.
-  /// Ensures that \p unreachableKeys has an accurate value for \p
-  /// weakMap before return.  \return whether any previously-unmarked
-  /// values were marked.
-  template <
-      typename Acceptor,
-      typename ObjIsMarkedFunc,
-      typename MarkFromValFunc>
-  static bool markFromReachableWeakMapKeys(
-      GC &gc,
-      JSWeakMap *weakMap,
-      Acceptor &acceptor,
-      llvh::DenseMap<JSWeakMap *, std::vector<detail::WeakRefKey *>>
-          *unreachableKeys,
-      ObjIsMarkedFunc objIsMarked,
-      MarkFromValFunc markFromVal);
-
-  /// \return A reference to the mutex that controls accessing any WeakRef.
-  ///   This mutex must be held if a WeakRef is created or modified.
-  WeakRefMutex &weakRefMutex() {
-    return weakRefMutex_;
-  }
-
-  /// Assumes that all known reachable WeakMaps have been collected in
-  /// \p reachableWeakMaps.  For all these WeakMaps, find all
-  /// reachable keys and mark from the corresponding value using the given \p
-  /// acceptor, reaching a transitive closure.
-  /// Do this until no newly reachable objects are found in a
-  /// traversal of the WeakMaps.  We assume that WeakMaps found newly
-  /// reachable are added to \p reachableWeakMaps, and do not assume
-  /// we've reached transitive closure until all maps are scanned.
-  /// Uses \p objIsMarked to determine whether an object is marked,
-  /// and, for entries whose keys are marked, invokes \p
-  /// checkValIsMarked on the corresponding value.  Used \p
-  /// drainMarkStack to ensure that the transitive closure of what's
-  /// currently on the mark stack is marked.  Requires \p acceptor
-  /// to be idempotent: it must be legal to apply the acceptor
-  /// multiple times to the same slot.  The function arguments have
-  /// the following specs:
-  ///
-  ///  * objIsMarked: (GCCell *) ==> bool
-  ///    Returns whether a GCCell is marked.
-  ///
-  ///  * markFromVal: (GCCell *cell, HermesValue &cellRef) ==> bool
-  ///    Requires that \p cell is non-null, and the value of \p
-  ///    cellRef.  If the argument is unmarked, ensure that its
-  ///    transitive closure is marked.  Returns whether the object was
-  ///    newly marked.
-  ///
-  ///  * drainMarkStack: (Acceptor &acceptor) ==> void
-  ///    Ensures that the mark stack used by the collector is empty;
-  ///    the transitive closure of the original contents is marked.
-  ///
-  ///  * checkMarkStackOverflow: () ==> bool
-  ///    Returns whether mark stack overflow has occurred.
-  ///
-  /// Some collectors compute the allocated bytes during GC.  If this
-  /// is done in \p drainMarkStack, that will cover all objects except
-  /// WeakWaps, which are never pushed on the mark stack.  Thus:
-  /// \return the total size of reachable WeakMaps.
-  template <
-      typename Acceptor,
-      typename ObjIsMarkedFunc,
-      typename MarkFromValFunc,
-      typename DrainMarkStackFunc,
-      typename CheckMarkStackOverflowFunc>
-  static gcheapsize_t completeWeakMapMarking(
-      GC &gc,
-      Acceptor &acceptor,
-      std::vector<JSWeakMap *> &reachableWeakMaps,
-      ObjIsMarkedFunc objIsMarked,
-      MarkFromValFunc markFromVal,
-      DrainMarkStackFunc drainMarkStack,
-      CheckMarkStackOverflowFunc checkMarkStackOverflow);
-
   /// @}
 
   /// If false, all reachable objects in the heap will have a dereference-able
@@ -1199,11 +1146,11 @@ class GCBase {
 
   bool isTrackingIDs() {
 #ifdef HERMES_MEMORY_INSTRUMENTATION
-    return getIDTracker().isTrackingIDs() ||
+    return getIDTracker().hasTrackedObjectIDs() ||
         getAllocationLocationTracker().isEnabled() ||
         getSamplingAllocationTracker().isEnabled();
 #else
-    return getIDTracker().isTrackingIDs();
+    return getIDTracker().hasTrackedObjectIDs();
 #endif
   }
 
@@ -1316,16 +1263,12 @@ class GCBase {
   void markWeakRoots(WeakRootAcceptor &acceptor, bool markLongLived) {
     gcCallbacks_.markWeakRoots(acceptor, markLongLived);
     acceptor.beginRootSection(RootAcceptor::Section::WeakRefSlots);
-    for (auto &slot : weakSlots_) {
-      slot.markWeakRoots(acceptor);
-    }
-    acceptor.endRootSection();
-  }
+    weakSlots_.forEach(
+        [&acceptor](WeakRefSlot &slot) { slot.markWeakRoots(acceptor); });
 
-  /// Frees the weak slot, so it can be re-used by future WeakRef allocations.
-  void freeWeakSlot(WeakRefSlot *slot) {
-    slot->free(firstFreeWeak_);
-    firstFreeWeak_ = slot;
+    weakMapEntrySlots_.forEach(
+        [&acceptor](WeakMapEntrySlot &slot) { slot.markWeakRoots(acceptor); });
+    acceptor.endRootSection();
   }
 
   /// Print the cumulative statistics.
@@ -1351,39 +1294,6 @@ class GCBase {
   virtual void oomDetail(
       llvh::MutableArrayRef<char> detailBuffer,
       std::error_code reason);
-
-  /// If a cell has any weak references to mark, and the acceptor supports
-  /// marking them, mark those weak references.
-  template <typename Acceptor>
-  void markWeakRefsIfNecessary(GCCell *cell, CellKind kind, Acceptor &acceptor);
-
-  /// Overload of \p markWeakRefsIfNecessary for acceptors that support marking
-  /// weak references.
-  /// Don't call this directly, use the three-argument variant instead.
-  template <typename Acceptor>
-  void markWeakRefsIfNecessary(
-      GCCell *cell,
-      CellKind kind,
-      Acceptor &acceptor,
-      std::true_type) {
-    // In C++17, we could implement this via "constexpr if" rather than
-    // overloads with std::true_type.
-    // Once C++17 is available, switch to using that.
-    if (auto *cb = VTable::getVTable(kind)->getMarkWeakCallback()) {
-      std::lock_guard<Mutex> wrLk{weakRefMutex()};
-      cb(cell, acceptor);
-    }
-  }
-
-  /// Overload of \p markWeakRefsIfNecessary for acceptors that do not support
-  /// marking weak references.
-  /// Don't call this directly, use the three-argument variant instead.
-  template <typename Acceptor>
-  static void markWeakRefsIfNecessary(
-      GCCell *,
-      CellKind kind,
-      Acceptor &,
-      std::false_type) {}
 
   template <typename T, class... Args>
   static T *constructCell(void *ptr, uint32_t size, Args &&...args) {
@@ -1482,18 +1392,12 @@ class GCBase {
   /// weakSlots_ is a list of all the weak pointers in the system. They are
   /// invalidated if they point to an object that is dead, and do not count
   /// towards whether an object is live or dead.
-  /// The state enum of a WeakRefSlot that is not free may be modified
-  /// concurrently, those values are protected by the weakRefMutex_.
-  std::deque<WeakRefSlot> weakSlots_;
+  ManagedChunkedList<WeakRefSlot> weakSlots_;
 
-  /// Pointer to the first free weak reference slot. Free weak refs are chained
-  /// together in a linked list.
-  WeakRefSlot *firstFreeWeak_{nullptr};
-
-  /// Any thread that modifies a WeakRefSlot or a data structure containing
-  /// WeakRefs that the GC will mark must hold this mutex. The GC will hold this
-  /// mutex while scanning any weak references.
-  WeakRefMutex weakRefMutex_;
+  /// A list of all slots used by WeakMap/WeakSet. They are freed by the mutator
+  /// when operating on a WeakMap/WeakSet, or in the finalizer during sweeping.
+  /// In collection phase, GC visits each non-free slot to update their values.
+  ManagedChunkedList<WeakMapEntrySlot> weakMapEntrySlots_;
 
   /// Tracks what objects need a stable identity for features such as heap
   /// snapshots and the memory profiler.

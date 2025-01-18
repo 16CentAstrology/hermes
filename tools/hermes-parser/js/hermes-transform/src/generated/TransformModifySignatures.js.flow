@@ -8,10 +8,15 @@
  * @format
  */
 
-import type {CallExpression, ObjectTypeAnnotation} from 'hermes-estree';
+import type {
+  CallExpression,
+  ObjectTypeAnnotation,
+  Program,
+} from 'hermes-estree';
 import type {
   CallExpressionProps,
   ObjectTypeAnnotationProps,
+  ProgramProps,
 } from './node-types';
 
 /*
@@ -22,15 +27,21 @@ import type {
  * the transformation tests.
  */
 
+type ProgramModifySignature = (
+  node: Program,
+  newProps: Partial<ProgramProps>,
+) => void;
+
 type CallExpressionModifySignature = (
   node: CallExpression,
-  newProps: $Partial<CallExpressionProps>,
+  newProps: Partial<CallExpressionProps>,
 ) => void;
 
 type ObjectTypeAnnotationModifySignature = (
   node: ObjectTypeAnnotation,
-  newProps: $Partial<ObjectTypeAnnotationProps>,
+  newProps: Partial<ObjectTypeAnnotationProps>,
 ) => void;
 
 export type TransformModifySignatures = CallExpressionModifySignature &
-  ObjectTypeAnnotationModifySignature;
+  ObjectTypeAnnotationModifySignature &
+  ProgramModifySignature;

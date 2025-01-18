@@ -78,7 +78,7 @@ RuntimeModule::~RuntimeModule() {
   runtime_.getHeap().getIDTracker().untrackNative(&functionMap_);
 }
 
-void RuntimeModule::prepareForRuntimeShutdown() {
+void RuntimeModule::prepareForDestruction() {
   for (int i = 0, e = functionMap_.size(); i < e; i++) {
     if (functionMap_[i] != nullptr &&
         functionMap_[i]->getRuntimeModule() != this) {
@@ -95,10 +95,7 @@ CallResult<RuntimeModule *> RuntimeModule::create(
     RuntimeModuleFlags flags,
     llvh::StringRef sourceURL) {
   RuntimeModule *result;
-  {
-    WeakRefLock lk{runtime.getHeap().weakRefMutex()};
-    result = new RuntimeModule(runtime, domain, flags, sourceURL, scriptID);
-  }
+  result = new RuntimeModule(runtime, domain, flags, sourceURL, scriptID);
   runtime.getCrashManager().registerMemory(result, sizeof(*result));
   if (bytecode) {
     if (result->initializeMayAllocate(std::move(bytecode)) ==
@@ -119,7 +116,6 @@ RuntimeModule *RuntimeModule::createUninitialized(
     Handle<Domain> domain,
     RuntimeModuleFlags flags,
     facebook::hermes::debugger::ScriptID scriptID) {
-  WeakRefLock lk{runtime.getHeap().weakRefMutex()};
   return new RuntimeModule(runtime, domain, flags, "", scriptID);
 }
 

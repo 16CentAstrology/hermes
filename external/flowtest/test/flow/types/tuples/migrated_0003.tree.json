@@ -25,7 +25,7 @@
                 "type":"TupleTypeAnnotation",
                 "loc":{"source":null,"start":{"line":1,"column":8},"end":{"line":1,"column":24}},
                 "range":[8,24],
-                "types":[
+                "elementTypes":[
                   {
                     "type":"NumberTypeAnnotation",
                     "loc":{"source":null,"start":{"line":1,"column":9},"end":{"line":1,"column":15}},
@@ -36,7 +36,8 @@
                     "loc":{"source":null,"start":{"line":1,"column":17},"end":{"line":1,"column":23}},
                     "range":[17,23]
                   }
-                ]
+                ],
+                "inexact":false
               }
             },
             "optional":false

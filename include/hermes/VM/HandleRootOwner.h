@@ -39,7 +39,7 @@ class MutableHandle;
 
 /// Define HERMESVM_DEBUG_TRACK_GCSCOPE_HANDLES in debug mode to enable
 /// statistical tracking of handles per GCScope.
-//#define HERMESVM_DEBUG_TRACK_GCSCOPE_HANDLES
+// #define HERMESVM_DEBUG_TRACK_GCSCOPE_HANDLES
 
 // We can only track handles in debug mode.
 #if defined(NDEBUG) && defined(HERMESVM_DEBUG_TRACK_GCSCOPE_HANDLES)
@@ -134,9 +134,6 @@ class HandleRootOwner {
   static const PinnedHermesValue negOneValue_;
 
   void markGCScopes(RootAcceptor &acceptor);
-
-  /// Mark the WeakRefs in the weakRefs_ list.
-  void markWeakRefs(WeakRefAcceptor &acceptor);
 
   /// Return the top-most \c GCScope.
   GCScope *getTopGCScope();
@@ -440,9 +437,14 @@ class GCScope : public GCScopeDebugBase {
   /// Allocate storage for a new PinnedHermesValue. The garbage collector knows
   /// about it and will be able to mark it.
   PinnedHermesValue *newPinnedHermesValue(HermesValue value) {
+#if defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) && !defined(NDEBUG)
+    // Ignore assert below when fuzzing a debug build.
+    (void)handlesLimit_; // ignore unused variable warning
+#else
     assert(
         getHandleCountDbg() < handlesLimit_ &&
         "Too many handles allocated in GCScope");
+#endif
     assert(runtime_.noHandleLevel_ == 0 && "No handles allowed right now.");
 
     setHandleCountDbg(getHandleCountDbg() + 1);

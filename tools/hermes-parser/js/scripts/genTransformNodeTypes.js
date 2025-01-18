@@ -12,7 +12,7 @@ import {
   GetHermesESTreeJSON,
   formatAndWriteSrcArtifact,
   LITERAL_TYPES,
-  NODES_WITHOUT_TRANSFORM_NODE_TYPES,
+  EXCLUDE_PROPERTIES_FROM_NODE,
 } from './utils/scriptUtils';
 
 const imports: Array<string> = [];
@@ -27,8 +27,10 @@ const NODES_WITH_SPECIAL_HANDLING = new Set([
   'ClassDeclaration',
   'DeclareExportDeclaration',
   'DeclareFunction',
+  'DeclareHook',
   'ExportNamedDeclaration',
   'Identifier',
+  'MemberExpression',
   'NullLiteral',
   'NumericLiteral',
   'ObjectTypeProperty',
@@ -39,10 +41,7 @@ const NODES_WITH_SPECIAL_HANDLING = new Set([
 ]);
 
 for (const node of GetHermesESTreeJSON()) {
-  if (
-    NODES_WITH_SPECIAL_HANDLING.has(node.name) ||
-    NODES_WITHOUT_TRANSFORM_NODE_TYPES.has(node.name)
-  ) {
+  if (NODES_WITH_SPECIAL_HANDLING.has(node.name)) {
     continue;
   }
 
@@ -59,7 +58,7 @@ export type ${node.name}Props = {};
 export function ${node.name}(props: {
   +parent?: ESNode,
 } = {...null}): DetachedNode<${node.name}Type> {
-  return detachedProps<${node.name}Type>(props.parent, {
+  return detachedProps<${node.name}Type>((props.parent: $FlowFixMe), {
     type: '${type}',
   });
 }
@@ -71,6 +70,9 @@ export function ${node.name}(props: {
 export type ${node.name}Props = {
   ${node.arguments
     .map(arg => {
+      if (EXCLUDE_PROPERTIES_FROM_NODE.get(node.name)?.has(arg.name)) {
+        return null;
+      }
       const baseType = `${node.name}Type['${arg.name}']`;
       let type = baseType;
       if (arg.type === 'NodePtr') {
@@ -84,6 +86,7 @@ export type ${node.name}Props = {
       }
       return `+${arg.name}: ${type}`;
     })
+    .filter(Boolean)
     .join(',\n')},
 };
 `,
@@ -91,27 +94,31 @@ export type ${node.name}Props = {
     nodeTypeFunctions.push(
       `\
 export function ${node.name}(props: {
-  ...$ReadOnly<${node.name}Props>,
+  ...${node.name}Props,
   +parent?: ESNode,
 }): DetachedNode<${node.name}Type> {
-  const node = detachedProps<${node.name}Type>(props.parent, {
+  const node = detachedProps<${node.name}Type>((props.parent: $FlowFixMe), {
     type: '${type}',
     ${node.arguments
       .map(arg => {
+        if (EXCLUDE_PROPERTIES_FROM_NODE.get(node.name)?.has(arg.name)) {
+          return null;
+        }
         switch (arg.type) {
           case 'NodePtr':
-            return `${arg.name}: asDetachedNode(props.${arg.name})`;
+            return `${arg.name}: asDetachedNodeForCodeGen(props.${arg.name})`;
           case 'NodeList':
             return `${arg.name}: props.${arg.name}${
               arg.optional ? '?.' : '.'
-            }map(n => asDetachedNode(n))`;
+            }map(n => asDetachedNodeForCodeGen(n))`;
           default:
             return `${arg.name}: props.${arg.name}`;
         }
       })
+      .filter(Boolean)
       .join(',\n')},
   });
-  setParentPointersInDirectChildren(node);
+  setParentPointersInDirectChildren((node: $FlowFixMe));
   return node;
 }
 `,
@@ -127,7 +134,7 @@ ${imports.map(imp => `${imp} as ${imp}Type`).join(',\n')}
 import type {DetachedNode, MaybeDetachedNode} from '../detachedNode';
 
 import {
-  asDetachedNode,
+  asDetachedNodeForCodeGen,
   detachedProps,
   setParentPointersInDirectChildren,
 } from '../detachedNode';

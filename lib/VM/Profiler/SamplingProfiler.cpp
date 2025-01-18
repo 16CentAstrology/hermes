@@ -121,13 +121,13 @@ uint32_t SamplingProfiler::walkRuntimeStack(
       }
     }
   }
-  sampleStorage.tid = oscompat::thread_id();
+  sampleStorage.tid = oscompat::global_thread_id();
   sampleStorage.timeStamp = std::chrono::steady_clock::now();
   return count;
 }
 
 SamplingProfiler::SamplingProfiler(Runtime &runtime) : runtime_{runtime} {
-  threadNames_[oscompat::thread_id()] = oscompat::thread_name();
+  threadNames_[oscompat::global_thread_id()] = oscompat::thread_name();
   sampling_profiler::Sampler::get()->registerRuntime(this);
 }
 
@@ -207,8 +207,8 @@ void SamplingProfiler::serializeInDevToolsFormat(llvh::raw_ostream &OS) {
   clear();
 }
 
-bool SamplingProfiler::enable() {
-  return sampling_profiler::Sampler::get()->enable();
+bool SamplingProfiler::enable(double meanHzFreq) {
+  return sampling_profiler::Sampler::get()->enable(meanHzFreq);
 }
 
 bool SamplingProfiler::disable() {
@@ -225,6 +225,10 @@ void SamplingProfiler::clear() {
 }
 
 void SamplingProfiler::suspend(std::string_view extraInfo) {
+  // Need to check whether the profiler is enabled without holding the
+  // runtimeDataLock_. Otherwise, we'd have a lock inversion.
+  bool enabled = sampling_profiler::Sampler::get()->enabled();
+
   std::lock_guard<std::mutex> lk(runtimeDataLock_);
   if (++suspendCount_ > 1 || extraInfo.empty()) {
     // If there are multiple nested suspend calls use a default "suspended"
@@ -234,8 +238,7 @@ void SamplingProfiler::suspend(std::string_view extraInfo) {
   }
 
   // Only record the stack trace for the first suspend() call.
-  if (LLVM_UNLIKELY(
-          sampling_profiler::Sampler::get()->enabled() && suspendCount_ == 1)) {
+  if (LLVM_UNLIKELY(enabled && suspendCount_ == 1)) {
     recordPreSuspendStack(extraInfo);
   }
 }

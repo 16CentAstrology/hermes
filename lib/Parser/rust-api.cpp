@@ -329,6 +329,73 @@ struct ReturnType<NodeList> {
     return ReturnType<ARG7TY>::get(node->_##ARG7NM);                \
   }
 
+#define ESTREE_NODE_9_ARGS(                                         \
+    NAME,                                                           \
+    BASE,                                                           \
+    ARG0TY,                                                         \
+    ARG0NM,                                                         \
+    ARG0OPT,                                                        \
+    ARG1TY,                                                         \
+    ARG1NM,                                                         \
+    ARG1OPT,                                                        \
+    ARG2TY,                                                         \
+    ARG2NM,                                                         \
+    ARG2OPT,                                                        \
+    ARG3TY,                                                         \
+    ARG3NM,                                                         \
+    ARG3OPT,                                                        \
+    ARG4TY,                                                         \
+    ARG4NM,                                                         \
+    ARG4OPT,                                                        \
+    ARG5TY,                                                         \
+    ARG5NM,                                                         \
+    ARG5OPT,                                                        \
+    ARG6TY,                                                         \
+    ARG6NM,                                                         \
+    ARG6OPT,                                                        \
+    ARG7TY,                                                         \
+    ARG7NM,                                                         \
+    ARG7OPT,                                                        \
+    ARG8TY,                                                         \
+    ARG8NM,                                                         \
+    ARG8OPT)                                                        \
+  extern "C" ReturnType<ARG0TY>::Type hermes_get_##NAME##_##ARG0NM( \
+      const NAME##Node *node) {                                     \
+    return ReturnType<ARG0TY>::get(node->_##ARG0NM);                \
+  }                                                                 \
+  extern "C" ReturnType<ARG1TY>::Type hermes_get_##NAME##_##ARG1NM( \
+      const NAME##Node *node) {                                     \
+    return ReturnType<ARG1TY>::get(node->_##ARG1NM);                \
+  }                                                                 \
+  extern "C" ReturnType<ARG2TY>::Type hermes_get_##NAME##_##ARG2NM( \
+      const NAME##Node *node) {                                     \
+    return ReturnType<ARG2TY>::get(node->_##ARG2NM);                \
+  }                                                                 \
+  extern "C" ReturnType<ARG3TY>::Type hermes_get_##NAME##_##ARG3NM( \
+      const NAME##Node *node) {                                     \
+    return ReturnType<ARG3TY>::get(node->_##ARG3NM);                \
+  }                                                                 \
+  extern "C" ReturnType<ARG4TY>::Type hermes_get_##NAME##_##ARG4NM( \
+      const NAME##Node *node) {                                     \
+    return ReturnType<ARG4TY>::get(node->_##ARG4NM);                \
+  }                                                                 \
+  extern "C" ReturnType<ARG5TY>::Type hermes_get_##NAME##_##ARG5NM( \
+      const NAME##Node *node) {                                     \
+    return ReturnType<ARG5TY>::get(node->_##ARG5NM);                \
+  }                                                                 \
+  extern "C" ReturnType<ARG6TY>::Type hermes_get_##NAME##_##ARG6NM( \
+      const NAME##Node *node) {                                     \
+    return ReturnType<ARG6TY>::get(node->_##ARG6NM);                \
+  }                                                                 \
+  extern "C" ReturnType<ARG7TY>::Type hermes_get_##NAME##_##ARG7NM( \
+      const NAME##Node *node) {                                     \
+    return ReturnType<ARG7TY>::get(node->_##ARG7NM);                \
+  }                                                                 \
+  extern "C" ReturnType<ARG8TY>::Type hermes_get_##NAME##_##ARG8NM( \
+      const NAME##Node *node) {                                     \
+    return ReturnType<ARG8TY>::get(node->_##ARG8NM);                \
+  }
+
 #include "hermes/AST/ESTree.def"
 
 namespace {
@@ -364,6 +431,8 @@ struct ParserFlags {
   ParserDialect dialect = ParserDialect::JavaScript;
   /// Store doc-comment block at the top of the file.
   bool storeDocBlock = false;
+  /// Store all comments
+  bool storeComments = false;
 };
 
 enum class DiagKind : uint32_t {
@@ -376,7 +445,8 @@ enum class DiagKind : uint32_t {
 DiagKind toDiagKind(llvh::SourceMgr::DiagKind k) {
   switch (k) {
     default:
-      assert(false);
+      assert(false && "Invalid DiagKind");
+      [[fallthrough]];
     case llvh::SourceMgr::DK_Error:
       return DiagKind::Error;
     case llvh::SourceMgr::DK_Warning:
@@ -467,6 +537,9 @@ struct ParserContext {
   /// Doc block at the top of the file.
   std::string docBlock_{};
 
+  /// Comments
+  std::vector<parser::StoredComment> comments_{};
+
   explicit ParserContext() {
     context_.getSourceErrorManager().setDiagHandler(
         [](const llvh::SMDiagnostic &diag, void *ctx) {
@@ -535,14 +608,17 @@ hermes_parser_parse(ParserFlags flags, const char *source, size_t len) {
       break;
     case ParserDialect::Flow:
       parserCtx->context_.setParseFlow(hermes::ParseFlowSetting::ALL);
+      parserCtx->context_.setParseFlowComponentSyntax(true);
       break;
     case ParserDialect::FlowUnambiguous:
       parserCtx->context_.setParseFlow(hermes::ParseFlowSetting::UNAMBIGUOUS);
+      parserCtx->context_.setParseFlowComponentSyntax(true);
       break;
     case ParserDialect::FlowDetect:
       parserCtx->context_.setParseFlow(
           parser::hasFlowPragma(comments) ? ParseFlowSetting::ALL
                                           : ParseFlowSetting::UNAMBIGUOUS);
+      parserCtx->context_.setParseFlowComponentSyntax(true);
       break;
     case ParserDialect::TypeScript:
       parserCtx->context_.setParseTS(true);
@@ -555,6 +631,11 @@ hermes_parser_parse(ParserFlags flags, const char *source, size_t len) {
 
   parser::JSParser parser(
       parserCtx->context_, parserCtx->bufId_, hermes::parser::FullParse);
+
+  if (flags.storeComments) {
+    parser.setStoreComments(true);
+  }
+
   auto ast = parser.parse();
 
   if (!parserCtx->firstError_) {
@@ -562,7 +643,11 @@ hermes_parser_parse(ParserFlags flags, const char *source, size_t len) {
       // Just in case.
       parserCtx->addError("Internal error");
     } else {
+      parser.registerMagicURLs();
       parserCtx->ast_ = *ast;
+      if (flags.storeComments) {
+        parserCtx->comments_ = parser.moveStoredComments();
+      }
     }
   }
   return parserCtx.release();
@@ -662,4 +747,10 @@ extern "C" DataRef hermes_get_node_name(ESTree::Node *n) {
 /// parse time.
 extern "C" DataRef hermes_parser_get_doc_block(ParserContext *parserCtx) {
   return toDataRef(parserCtx->docBlock_);
+}
+
+/// \return all comments for the file if storeComments was provided at
+/// parse time.
+extern "C" DataRef hermes_parser_get_comments(ParserContext *parserCtx) {
+  return toDataRef(parserCtx->comments_);
 }

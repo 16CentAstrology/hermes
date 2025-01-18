@@ -25,7 +25,7 @@ struct HermesTestHelper;
 namespace hermes {
 namespace vm {
 class GCExecTrace;
-struct MockedEnvironment;
+class Runtime;
 } // namespace vm
 } // namespace hermes
 
@@ -71,7 +71,10 @@ class HERMES_EXPORT HermesRuntime : public jsi::Runtime {
       size_t len);
 
   /// Enable sampling profiler.
-  static void enableSamplingProfiler();
+  /// Starts a separate thread that polls VM state with \p meanHzFreq frequency.
+  /// Any subsequent call to \c enableSamplingProfiler() is ignored until
+  /// next call to \c disableSamplingProfiler()
+  static void enableSamplingProfiler(double meanHzFreq = 100);
 
   /// Disable the sampling profiler
   static void disableSamplingProfiler();
@@ -136,18 +139,10 @@ class HERMES_EXPORT HermesRuntime : public jsi::Runtime {
   /// \return a jsi::Object if a matching object is found, else returns null.
   jsi::Value getObjectForID(uint64_t id);
 
-  /// Get a structure representing the environment-dependent behavior, so
-  /// it can be written into the trace for later replay.
-  const ::hermes::vm::MockedEnvironment &getMockedEnvironment() const;
-
   /// Get a structure representing the execution history (currently just of
   /// GC, but will be generalized as necessary), to aid in debugging
   /// non-deterministic execution.
   const ::hermes::vm::GCExecTrace &getGCExecTrace() const;
-
-  /// Make the runtime read from \p env to replay its environment-dependent
-  /// behavior.
-  void setMockedEnvironment(const ::hermes::vm::MockedEnvironment &env);
 
   /// Get IO tracking (aka HBC page access) info as a JSON string.
   /// See hermes::vm::Runtime::getIOTrackingInfoJSON() for conditions
@@ -183,17 +178,28 @@ class HERMES_EXPORT HermesRuntime : public jsi::Runtime {
       const DebugFlags &debugFlags);
 #endif
 
-  /// Register this runtime for sampling profiler.
+  /// Register this runtime and thread for sampling profiler. Before using the
+  /// runtime on another thread, invoke this function again from the new thread
+  /// to make the sampling profiler target the new thread (and forget the old
+  /// thread).
   void registerForProfiling();
   /// Unregister this runtime for sampling profiler.
   void unregisterForProfiling();
 
+  /// Define methods to interrupt JS execution and set time limits.
+  /// All JS compiled to bytecode via prepareJS, or evaluateJS, will support
+  /// interruption and time limit monitoring if the runtime is configured with
+  /// AsyncBreakCheckInEval. If JS prepared in other ways is executed, care must
+  /// be taken to ensure that it is compiled in a mode that supports it (i.e.,
+  /// the emitted code contains async break checks).
+
+  /// Asynchronously terminates the current execution. This can be called on
+  /// any thread.
+  void asyncTriggerTimeout();
+
   /// Register this runtime for execution time limit monitoring, with a time
   /// limit of \p timeoutInMs milliseconds.
-  /// All JS compiled to bytecode via prepareJS, or evaluateJS, will support the
-  /// time limit monitoring.  If JS prepared in other ways is executed, care
-  /// must be taken to ensure that it is compiled in a mode that supports the
-  /// monitoring (i.e., the emitted code contains async break checks).
+  /// See compilation notes above.
   void watchTimeLimit(uint32_t timeoutInMs);
   /// Unregister this runtime for execution time limit monitoring.
   void unwatchTimeLimit();
@@ -208,6 +214,12 @@ class HERMES_EXPORT HermesRuntime : public jsi::Runtime {
       const std::shared_ptr<const jsi::Buffer> &buffer,
       const std::shared_ptr<const jsi::Buffer> &sourceMapBuf,
       const std::string &sourceURL);
+
+  /// Returns the underlying low level Hermes VM runtime instance.
+  /// This function is considered unsafe and unstable.
+  /// Direct use of a vm::Runtime should be avoided as the lower level APIs are
+  /// unsafe and they can change without notice.
+  ::hermes::vm::Runtime *getVMRuntimeUnsafe() const;
 
  private:
   // Only HermesRuntimeImpl can subclass this.

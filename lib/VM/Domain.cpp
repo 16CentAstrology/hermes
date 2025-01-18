@@ -23,7 +23,6 @@ const VTable Domain::vt{
     CellKind::DomainKind,
     cellSize<Domain>(),
     _finalizeImpl,
-    nullptr,
     _mallocSizeImpl,
     nullptr
 #ifdef HERMES_MEMORY_INSTRUMENTATION
@@ -56,12 +55,6 @@ void Domain::_finalizeImpl(GCCell *cell, GC &gc) {
     gc.getIDTracker().untrackNative(rm);
   }
   self->~Domain();
-}
-
-Domain::~Domain() {
-  for (RuntimeModule *rm : runtimeModules_) {
-    delete rm;
-  }
 }
 
 PseudoHandle<NativeFunction> Domain::getThrowingRequire(

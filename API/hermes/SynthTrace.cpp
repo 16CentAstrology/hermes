@@ -11,7 +11,6 @@
 #include "hermes/Support/Conversions.h"
 #include "hermes/Support/JSONEmitter.h"
 #include "hermes/Support/UTF8.h"
-#include "hermes/VM/MockedEnvironment.h"
 #include "hermes/VM/StringPrimitive.h"
 
 #include "llvh/Support/Endian.h"
@@ -77,6 +76,16 @@ uint64_t decodeID(const std::string &s) {
   return id;
 }
 
+llvh::StringRef recordTypeToString(RecordType type) {
+  switch (type) {
+#define CASE(t)       \
+  case RecordType::t: \
+    return #t "Record";
+    SYNTH_TRACE_RECORD_TYPES(CASE)
+#undef CASE
+  }
+}
+
 } // namespace
 
 bool SynthTrace::TraceValue::operator==(const TraceValue &that) const {
@@ -99,15 +108,14 @@ bool SynthTrace::TraceValue::operator==(const TraceValue &that) const {
 }
 
 SynthTrace::SynthTrace(
-    ObjectID globalObjID,
     const ::hermes::vm::RuntimeConfig &conf,
-    std::unique_ptr<llvh::raw_ostream> traceStream)
+    std::unique_ptr<llvh::raw_ostream> traceStream,
+    std::optional<ObjectID> globalObjID)
     : traceStream_(std::move(traceStream)), globalObjID_(globalObjID) {
   if (traceStream_) {
     json_ = std::make_unique<JSONEmitter>(*traceStream_, /*pretty*/ true);
     json_->openDict();
     json_->emitKeyValue("version", synthVersion());
-    json_->emitKeyValue("globalObjID", globalObjID_);
 
     // RuntimeConfig section.
     json_->emitKey("runtimeConfig");
@@ -301,234 +309,8 @@ void SynthTrace::Record::toJSON(JSONEmitter &json) const {
   json.closeDict();
 }
 
-bool SynthTrace::MarkerRecord::operator==(const Record &that) const {
-  return Record::operator==(that) &&
-      tag_ == dynamic_cast<const MarkerRecord &>(that).tag_;
-}
-
-bool SynthTrace::ReturnMixin::operator==(const ReturnMixin &that) const {
-  return retVal_ == that.retVal_;
-}
-
-bool SynthTrace::BeginExecJSRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const BeginExecJSRecord &>(that);
-  return sourceURL_ == thatCasted.sourceURL_ &&
-      sourceHash_ == thatCasted.sourceHash_ &&
-      sourceIsBytecode_ == thatCasted.sourceIsBytecode_;
-}
-
-bool SynthTrace::EndExecJSRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const EndExecJSRecord &>(that);
-  return MarkerRecord::operator==(thatCasted) &&
-      ReturnMixin::operator==(thatCasted);
-}
-
-bool SynthTrace::CreateObjectRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const CreateObjectRecord &>(that);
-  return objID_ == thatCasted.objID_;
-}
-
-bool SynthTrace::DrainMicrotasksRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const DrainMicrotasksRecord &>(that);
-  return maxMicrotasksHint_ == thatCasted.maxMicrotasksHint_;
-}
-
-bool SynthTrace::CreateBigIntRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  auto &thatCasted = dynamic_cast<const CreateBigIntRecord &>(that);
-  return objID_ == thatCasted.objID_ && method_ == thatCasted.method_ &&
-      bits_ == thatCasted.bits_;
-}
-
-bool SynthTrace::BigIntToStringRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  auto &thatCasted = dynamic_cast<const BigIntToStringRecord &>(that);
-  return strID_ == thatCasted.strID_ && bigintID_ == thatCasted.bigintID_ &&
-      radix_ == thatCasted.radix_;
-}
-
-bool SynthTrace::CreateStringRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  auto &thatCasted = dynamic_cast<const CreateStringRecord &>(that);
-  return objID_ == thatCasted.objID_ && ascii_ == thatCasted.ascii_ &&
-      chars_ == thatCasted.chars_;
-}
-
-bool SynthTrace::CreatePropNameIDRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  auto &thatCasted = dynamic_cast<const CreatePropNameIDRecord &>(that);
-  return propNameID_ == thatCasted.propNameID_ &&
-      valueType_ == thatCasted.valueType_ &&
-      traceValue_ == thatCasted.traceValue_ && chars_ == thatCasted.chars_;
-}
-
-bool SynthTrace::CreateHostFunctionRecord::operator==(
-    const Record &that) const {
-  if (!CreateObjectRecord::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const CreateHostFunctionRecord &>(that);
-  if (!(propNameID_ == thatCasted.propNameID_ &&
-        paramCount_ == thatCasted.paramCount_)) {
-    return false;
-  }
-#ifdef HERMESVM_API_TRACE_DEBUG
-  assert(functionName_ == thatCasted.functionName_);
-#endif
-  return true;
-}
-
-bool SynthTrace::GetOrSetPropertyRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const GetOrSetPropertyRecord &>(that);
-  if (!(objID_ == thatCasted.objID_ && propID_ == thatCasted.propID_ &&
-        value_ == thatCasted.value_)) {
-    return false;
-  }
-#ifdef HERMESVM_API_TRACE_DEBUG
-  assert(propNameDbg_ == thatCasted.propNameDbg_);
-#endif
-  return true;
-}
-
-bool SynthTrace::HasPropertyRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const HasPropertyRecord &>(that);
-  return objID_ == thatCasted.objID_ && propID_ == thatCasted.propID_;
-}
-
-bool SynthTrace::GetPropertyNamesRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const GetPropertyNamesRecord &>(that);
-  return objID_ == thatCasted.objID_ && propNamesID_ == thatCasted.propNamesID_;
-}
-
-bool SynthTrace::CreateArrayRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const CreateArrayRecord &>(that);
-  return objID_ == thatCasted.objID_ && length_ == thatCasted.length_;
-}
-
-bool SynthTrace::ArrayReadOrWriteRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const ArrayReadOrWriteRecord &>(that);
-  return objID_ == thatCasted.objID_ && index_ == thatCasted.index_ &&
-      value_ == thatCasted.value_;
-}
-
-bool SynthTrace::CallRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  const auto &thatCasted = dynamic_cast<const CallRecord &>(that);
-  return functionID_ == thatCasted.functionID_ &&
-      std::equal(
-             args_.begin(),
-             args_.end(),
-             thatCasted.args_.begin(),
-             [](TraceValue x, TraceValue y) { return x == y; });
-}
-
-bool SynthTrace::ReturnFromNativeRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  return ReturnMixin::operator==(
-      dynamic_cast<const ReturnFromNativeRecord &>(that));
-}
-
-bool SynthTrace::ReturnToNativeRecord::operator==(const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  return ReturnMixin::operator==(dynamic_cast<const ReturnMixin &>(that));
-}
-
-bool SynthTrace::GetOrSetPropertyNativeRecord::operator==(
-    const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  auto thatCasted = dynamic_cast<const GetOrSetPropertyNativeRecord *>(&that);
-  return hostObjectID_ == thatCasted->hostObjectID_ &&
-      propNameID_ == thatCasted->propNameID_ &&
-      propName_ == thatCasted->propName_;
-}
-
-bool SynthTrace::GetPropertyNativeRecord::operator==(const Record &that) const {
-  return GetOrSetPropertyNativeRecord::operator==(that);
-}
-
-bool SynthTrace::GetPropertyNativeReturnRecord::operator==(
-    const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  auto thatCasted = dynamic_cast<const GetPropertyNativeReturnRecord &>(that);
-  return ReturnMixin::operator==(thatCasted);
-}
-
-bool SynthTrace::SetPropertyNativeRecord::operator==(const Record &that) const {
-  return GetOrSetPropertyNativeRecord::operator==(that) &&
-      value_ == dynamic_cast<const SetPropertyNativeRecord &>(that).value_;
-}
-
-bool SynthTrace::GetNativePropertyNamesRecord::operator==(
-    const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  auto &thatCasted = dynamic_cast<const GetNativePropertyNamesRecord &>(that);
-  return hostObjectID_ == thatCasted.hostObjectID_;
-}
-
-bool SynthTrace::GetNativePropertyNamesReturnRecord::operator==(
-    const Record &that) const {
-  if (!Record::operator==(that)) {
-    return false;
-  }
-  auto &thatCasted =
-      dynamic_cast<const GetNativePropertyNamesReturnRecord &>(that);
-  return propNames_ == thatCasted.propNames_;
-}
-
 void SynthTrace::Record::toJSONInternal(JSONEmitter &json) const {
-  std::string storage;
-  llvh::raw_string_ostream os{storage};
-  os << getType() << "Record";
-  os.flush();
-
-  json.emitKeyValue("type", storage);
+  json.emitKeyValue("type", recordTypeToString(getType()));
   json.emitKeyValue("time", time_.count());
 }
 
@@ -540,6 +322,13 @@ void SynthTrace::MarkerRecord::toJSONInternal(JSONEmitter &json) const {
 void SynthTrace::CreateObjectRecord::toJSONInternal(JSONEmitter &json) const {
   Record::toJSONInternal(json);
   json.emitKeyValue("objID", objID_);
+}
+
+void SynthTrace::CreateObjectWithPrototypeRecord::toJSONInternal(
+    ::hermes::JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", objID_);
+  json.emitKeyValue("prototype", encode(prototype_));
 }
 
 static std::string createBigIntMethodToString(
@@ -580,7 +369,13 @@ void SynthTrace::CreateStringRecord::toJSONInternal(JSONEmitter &json) const {
   Record::toJSONInternal(json);
   json.emitKeyValue("objID", objID_);
   json.emitKeyValue("encoding", encodingName(ascii_));
-  json.emitKeyValue("chars", llvh::StringRef(chars_.data(), chars_.size()));
+  // For UTF-8 Strings, copy the content to a char16 array and emit each byte as
+  // a code unit. This allows us to reconstruct the exact string byte-for-byte
+  // during replay.
+  std::vector<char16_t> char16Vector(
+      (const unsigned char *)chars_.data(),
+      (const unsigned char *)chars_.data() + chars_.size());
+  json.emitKeyValue("chars", llvh::ArrayRef(char16Vector));
 }
 
 void SynthTrace::CreatePropNameIDRecord::toJSONInternal(
@@ -591,7 +386,13 @@ void SynthTrace::CreatePropNameIDRecord::toJSONInternal(
     json.emitKeyValue("value", encode(traceValue_));
   else {
     json.emitKeyValue("encoding", encodingName(valueType_ == ASCII));
-    json.emitKeyValue("chars", llvh::StringRef(chars_.data(), chars_.size()));
+    // For UTF-8 Strings, copy the content to a char16 array and emit each byte
+    // as a code unit. This allows us to reconstruct the exact string
+    // byte-for-byte during replay.
+    std::vector<char16_t> char16Vector(
+        (const unsigned char *)chars_.data(),
+        (const unsigned char *)chars_.data() + chars_.size());
+    json.emitKeyValue("chars", llvh::ArrayRef(char16Vector));
   }
 }
 
@@ -605,8 +406,16 @@ void SynthTrace::CreateHostFunctionRecord::toJSONInternal(
 #endif
 }
 
-void SynthTrace::GetOrSetPropertyRecord::toJSONInternal(
-    JSONEmitter &json) const {
+void SynthTrace::GetPropertyRecord::toJSONInternal(JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", objID_);
+  json.emitKeyValue("propID", encode(propID_));
+#ifdef HERMESVM_API_TRACE_DEBUG
+  json.emitKeyValue("propName", propNameDbg_);
+#endif
+}
+
+void SynthTrace::SetPropertyRecord::toJSONInternal(JSONEmitter &json) const {
   Record::toJSONInternal(json);
   json.emitKeyValue("objID", objID_);
   json.emitKeyValue("propID", encode(propID_));
@@ -616,6 +425,17 @@ void SynthTrace::GetOrSetPropertyRecord::toJSONInternal(
   json.emitKeyValue("value", encode(value_));
 }
 
+void SynthTrace::SetPrototypeRecord::toJSONInternal(JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", objID_);
+  json.emitKeyValue("value", encode(value_));
+}
+
+void SynthTrace::GetPrototypeRecord::toJSONInternal(JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", objID_);
+}
+
 void SynthTrace::HasPropertyRecord::toJSONInternal(JSONEmitter &json) const {
   Record::toJSONInternal(json);
   json.emitKeyValue("objID", objID_);
@@ -623,6 +443,11 @@ void SynthTrace::HasPropertyRecord::toJSONInternal(JSONEmitter &json) const {
 #ifdef HERMESVM_API_TRACE_DEBUG
   json.emitKeyValue("propName", propNameDbg_);
 #endif
+}
+
+void SynthTrace::QueueMicrotaskRecord::toJSONInternal(JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("callbackID", callbackID_);
 }
 
 void SynthTrace::DrainMicrotasksRecord::toJSONInternal(
@@ -635,7 +460,6 @@ void SynthTrace::GetPropertyNamesRecord::toJSONInternal(
     JSONEmitter &json) const {
   Record::toJSONInternal(json);
   json.emitKeyValue("objID", objID_);
-  json.emitKeyValue("propNamesID", propNamesID_);
 }
 
 void SynthTrace::CreateArrayRecord::toJSONInternal(JSONEmitter &json) const {
@@ -644,8 +468,13 @@ void SynthTrace::CreateArrayRecord::toJSONInternal(JSONEmitter &json) const {
   json.emitKeyValue("length", length_);
 }
 
-void SynthTrace::ArrayReadOrWriteRecord::toJSONInternal(
-    JSONEmitter &json) const {
+void SynthTrace::ArrayReadRecord::toJSONInternal(JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", objID_);
+  json.emitKeyValue("index", index_);
+}
+
+void SynthTrace::ArrayWriteRecord::toJSONInternal(JSONEmitter &json) const {
   Record::toJSONInternal(json);
   json.emitKeyValue("objID", objID_);
   json.emitKeyValue("index", index_);
@@ -723,12 +552,49 @@ void SynthTrace::GetNativePropertyNamesRecord::toJSONInternal(
 void SynthTrace::GetNativePropertyNamesReturnRecord::toJSONInternal(
     JSONEmitter &json) const {
   Record::toJSONInternal(json);
-  json.emitKey("properties");
+  json.emitKey("propNameIDs");
   json.openArray();
-  for (const auto &prop : propNames_) {
-    json.emitValue(prop);
+  for (const auto &prop : propNameIDs_) {
+    json.emitValue(encode(prop));
   }
   json.closeArray();
+}
+
+void SynthTrace::SetExternalMemoryPressureRecord::toJSONInternal(
+    JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", objID_);
+  json.emitKeyValue("amount", amount_);
+}
+
+void SynthTrace::Utf8Record::toJSONInternal(JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", encode(objID_));
+  // For UTF-8 Strings, copy the content to a char16 array and emit each byte as
+  // a code unit. This allows us to reconstruct the exact string byte-for-byte
+  // during replay.
+  std::vector<char16_t> char16Vector(
+      (const unsigned char *)retVal_.data(),
+      (const unsigned char *)retVal_.data() + retVal_.size());
+  json.emitKeyValue("retval", llvh::ArrayRef(char16Vector));
+}
+
+void SynthTrace::Utf16Record::toJSONInternal(JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", encode(objID_));
+  json.emitKeyValue("retval", llvh::ArrayRef(retVal_.data(), retVal_.size()));
+}
+
+void SynthTrace::GetStringDataRecord::toJSONInternal(JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", encode(objID_));
+  json.emitKeyValue(
+      "strData", llvh::ArrayRef(strData_.data(), strData_.size()));
+}
+
+void SynthTrace::GlobalRecord::toJSONInternal(JSONEmitter &json) const {
+  Record::toJSONInternal(json);
+  json.emitKeyValue("objID", objID_);
 }
 
 const char *SynthTrace::nameFromReleaseUnused(::hermes::vm::ReleaseUnused ru) {
@@ -778,9 +644,7 @@ void SynthTrace::flushRecords() {
   records_.clear();
 }
 
-void SynthTrace::flushAndDisable(
-    const ::hermes::vm::MockedEnvironment &env,
-    const ::hermes::vm::GCExecTrace &gcTrace) {
+void SynthTrace::flushAndDisable(const ::hermes::vm::GCExecTrace &gcTrace) {
   if (!json_) {
     return;
   }
@@ -788,28 +652,6 @@ void SynthTrace::flushAndDisable(
   // First, flush any buffered records, and close the still-open "trace" array.
   flushRecords();
   json_->closeArray();
-
-  // Env section.
-  json_->emitKey("env");
-  json_->openDict();
-
-  json_->emitKey("callsToHermesInternalGetInstrumentedStats");
-  json_->openArray();
-  for (const ::hermes::vm::MockedEnvironment::StatsTable &call :
-       env.callsToHermesInternalGetInstrumentedStats) {
-    json_->openDict();
-    for (const auto &key : call.keys()) {
-      auto val = call.lookup(key);
-      if (val.isNum()) {
-        json_->emitKeyValue(key, val.num());
-      } else {
-        json_->emitKeyValue(key, val.str());
-      }
-    }
-    json_->closeDict();
-  }
-  json_->closeArray();
-  json_->closeDict();
 
   // Now emit the history information, if we're in trace debug mode.
   gcTrace.emit(*json_);
@@ -822,94 +664,6 @@ void SynthTrace::flushAndDisable(
   os().flush();
   json_.reset();
   traceStream_.reset();
-}
-
-llvh::raw_ostream &operator<<(
-    llvh::raw_ostream &os,
-    SynthTrace::RecordType type) {
-#define CASE(t)                   \
-  case SynthTrace::RecordType::t: \
-    return os << #t
-  switch (type) {
-    CASE(BeginExecJS);
-    CASE(EndExecJS);
-    CASE(Marker);
-    CASE(CreateObject);
-    CASE(CreateString);
-    CASE(CreatePropNameID);
-    CASE(CreateHostObject);
-    CASE(CreateHostFunction);
-    CASE(DrainMicrotasks);
-    CASE(GetProperty);
-    CASE(SetProperty);
-    CASE(HasProperty);
-    CASE(GetPropertyNames);
-    CASE(CreateArray);
-    CASE(ArrayRead);
-    CASE(ArrayWrite);
-    CASE(CallFromNative);
-    CASE(ConstructFromNative);
-    CASE(ReturnFromNative);
-    CASE(ReturnToNative);
-    CASE(CallToNative);
-    CASE(GetPropertyNative);
-    CASE(GetPropertyNativeReturn);
-    CASE(SetPropertyNative);
-    CASE(SetPropertyNativeReturn);
-    CASE(GetNativePropertyNames);
-    CASE(GetNativePropertyNamesReturn);
-    CASE(CreateBigInt);
-    CASE(BigIntToString);
-  }
-#undef CASE
-  // This only exists to appease gcc.
-  return os;
-}
-
-std::istream &operator>>(std::istream &is, SynthTrace::RecordType &type) {
-  std::string kindstr;
-  is >> kindstr;
-  // Can't use switch on strings, use if statements instead.
-  // There's definitely a faster way to do this, but this code isn't critical.
-#define CASE(t)                              \
-  if (kindstr == std::string(#t "Record")) { \
-    type = SynthTrace::RecordType::t;        \
-    return is;                               \
-  }
-  CASE(BeginExecJS)
-  CASE(EndExecJS)
-  CASE(Marker)
-  CASE(CreateObject)
-  CASE(CreateString)
-  CASE(CreatePropNameID)
-  CASE(CreateHostObject)
-  CASE(CreateHostFunction)
-  CASE(DrainMicrotasks)
-  CASE(GetProperty)
-  CASE(SetProperty)
-  CASE(HasProperty)
-  CASE(GetPropertyNames);
-  CASE(CreateArray)
-  CASE(ArrayRead)
-  CASE(ArrayWrite)
-  CASE(CallFromNative)
-  CASE(ConstructFromNative)
-  CASE(ReturnFromNative)
-  CASE(ReturnToNative)
-  CASE(CallToNative)
-  CASE(GetPropertyNative)
-  CASE(GetPropertyNativeReturn)
-  CASE(SetPropertyNative)
-  CASE(SetPropertyNativeReturn)
-  CASE(GetNativePropertyNames)
-  CASE(GetNativePropertyNamesReturn)
-  CASE(CreateBigInt)
-  CASE(BigIntToString)
-#undef CASE
-
-  llvm_unreachable(
-      "failed to parse SynthTrace::RecordType. Make sure all enum values are "
-      "handled.");
 }
 
 } // namespace tracing

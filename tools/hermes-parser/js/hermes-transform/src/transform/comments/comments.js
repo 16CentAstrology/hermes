@@ -22,6 +22,7 @@ import {
   addLeadingComment as untypedAddLeadingComment,
   // $FlowExpectedError[untyped-import]
   addTrailingComment as untypedAddTrailingComment,
+  // $FlowFixMe[untyped-import]
 } from './prettier/common/util';
 import {isBlockComment} from 'hermes-estree';
 import {EOL} from 'os';
@@ -47,12 +48,82 @@ export function attachComments(
   });
 }
 
+export function mutateESTreeASTCommentsForPrettier(
+  program: Program,
+  text: string,
+): string {
+  let code = text;
+
+  // we need to delete the comments prop or else prettier will do
+  // its own attachment pass after the mutation and duplicate the
+  // comments on each node, borking the output
+  // $FlowExpectedError[cannot-write]
+  delete program.comments;
+
+  // The docblock comment is never attached to any AST nodes, since its technically
+  // attached to the program. However this is specific to our AST and in order for
+  // prettier to correctly print it we need to attach it to the first node in the
+  // program body.
+  if (program.docblock != null && program.docblock.comment != null) {
+    const docblockComment = program.docblock.comment;
+
+    const isDocblockCommentNew = !isAttachedComment(docblockComment);
+    if (isDocblockCommentNew) {
+      // $FlowExpectedError[prop-missing]
+      docblockComment.printed = false;
+      // $FlowExpectedError[prop-missing]
+      docblockComment.leading = true;
+      // $FlowExpectedError[prop-missing]
+      docblockComment.trailing = false;
+    }
+
+    // If we have a first node in the program body, attache the comment to that
+    // otherwise set it on the program.
+    if (program.body.length > 0) {
+      const firstStatement = program.body[0];
+      const leadingComments = getLeadingCommentsForNode(firstStatement);
+      if (!leadingComments.includes(docblockComment)) {
+        setCommentsOnNode(firstStatement, [
+          docblockComment,
+          ...getCommentsForNode(firstStatement),
+        ]);
+
+        if (isDocblockCommentNew) {
+          // Add markers to the code block to ensure docblock comment is printed on its
+          // own line.
+          code = makeCommentOwnLine(code, docblockComment);
+        }
+      }
+    } else {
+      setCommentsOnNode(program, [docblockComment]);
+    }
+  }
+
+  // Should not be needed anymore
+  // $FlowExpectedError[cannot-write]
+  delete program.docblock;
+
+  return code;
+}
+
 export function moveCommentsToNewNode(
   oldNode: ESNode,
   newNode: DetachedNode<ESNode>,
 ): void {
   setCommentsOnNode(newNode, getCommentsForNode(oldNode));
   setCommentsOnNode(oldNode, []);
+}
+
+export function cloneCommentsToNewNode(
+  oldNode: MaybeDetachedNode<ESNode>,
+  newNode: MaybeDetachedNode<ESNode>,
+): void {
+  setCommentsOnNode(
+    newNode,
+    getCommentsForNode(oldNode).map(comment =>
+      cloneCommentWithMarkers(comment),
+    ),
+  );
 }
 
 export function cloneJSDocCommentsToNewNode(
@@ -66,7 +137,10 @@ export function cloneJSDocCommentsToNewNode(
       comment.value.startsWith('*')
     );
   });
-  setCommentsOnNode(newNode, comments.map(cloneCommentWithMarkers));
+  setCommentsOnNode(newNode, [
+    ...getCommentsForNode(newNode),
+    ...comments.map(cloneCommentWithMarkers),
+  ]);
 }
 
 export function setCommentsOnNode(
@@ -77,29 +151,17 @@ export function setCommentsOnNode(
   node.comments = comments;
 }
 
-export function addCommentsToNode(
-  node: ESNode | DetachedNode<ESNode>,
-  comments: $ReadOnlyArray<Comment>,
-  side?: 'leading' | 'trailing' = 'trailing',
-): void {
-  // $FlowExpectedError[prop-missing] - this property is secretly added by prettier.
-  // $FlowExpectedError[cannot-write]
-  // $FlowExpectedError[incompatible-use]
-  node.comments = node.comments ?? [];
-  if (side === 'leading') {
-    // $FlowExpectedError[incompatible-cast]
-    (node.comments: Array<Comment>).unshift(...comments);
-  } else {
-    // $FlowExpectedError[incompatible-cast]
-    (node.comments: Array<Comment>).push(...comments);
-  }
-}
-
 export function getCommentsForNode(
   node: ESNode | DetachedNode<ESNode>,
 ): $ReadOnlyArray<Comment> {
   // $FlowExpectedError - this property is secretly added by prettier.
   return node.comments ?? [];
+}
+
+export function isAttachedComment(comment: Comment): boolean {
+  // Prettier adds this property to comments that have been attached.
+  // $FlowExpectedError[prop-missing] - this property is secretly added by prettier.
+  return comment.printed === false;
 }
 
 export function isLeadingComment(comment: Comment): boolean {
@@ -172,6 +234,25 @@ function getFirstNonWhitespaceIndex(code: string): number {
   return code.search(/\S/);
 }
 
+export function makeCommentOwnLine(code: string, comment: Comment): string {
+  let newCode = code;
+  // Since we always want a line break we need to ensure a newline is found when
+  // searching out from either side of the comment range.
+  let firstNewline = getFirstNewlineIndex(code);
+  if (firstNewline === -1) {
+    // No newline in file, lets add one.
+    newCode += EOL;
+    firstNewline = newCode.length;
+  }
+
+  // Prettier only uses these ranges for detecting whitespace, so this nonsensical
+  // range is safe.
+  // $FlowExpectedError[cannot-write]
+  comment.range = [firstNewline + 1, firstNewline];
+
+  return newCode;
+}
+
 export function appendCommentToSource(
   code: string,
   comment: Comment,
@@ -188,18 +269,7 @@ export function appendCommentToSource(
       switch (placement) {
         case CommentPlacement.LEADING_OWN_LINE:
         case CommentPlacement.TRAILING_OWN_LINE: {
-          // Since we always want a line break we need to ensure a newline is found when
-          // searching out from either side of the comment range.
-          let firstNewline = getFirstNewlineIndex(code);
-          if (firstNewline === -1) {
-            // No newline in file, lets add one.
-            newCode += EOL;
-            firstNewline = newCode.length;
-          }
-          // Prettier only uses these ranges for detecting whitespace, so this nonsensical
-          // range is safe.
-          // $FlowExpectedError[cannot-write]
-          comment.range = [firstNewline + 1, firstNewline];
+          newCode = makeCommentOwnLine(code, comment);
           break;
         }
         case CommentPlacement.LEADING_INLINE:

@@ -10,8 +10,6 @@
 
 #define FOREACH_TEST(F)              \
   F(callbacksCallJSFunction)         \
-  F(getInstrumentedStats)            \
-  F(getInstrumentedStatsAllowsEmpty) \
   F(globalReturnObject)              \
   F(getPropertyNames)                \
   F(hostCallsJS)                     \
@@ -29,6 +27,9 @@
   F(nativePropertyNames)             \
   F(nativeSetsConstant)              \
   F(parseGCConfig)                   \
+  F(partialTraceHostFunction)        \
+  F(partialTraceHostObjectGet)       \
+  F(partialTraceHostObjectSet)       \
   F(surrogatePairString)
 
 #define TEST_FUNC_FORWARD_DECL(name) \
